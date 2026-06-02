@@ -1,0 +1,6 @@
+# Copy this file to "inventory" and replace with your SSH host(s).
+# The real "inventory" is gitignored so host names stay out of git.
+myhost sshgate_source_port=2222 sshgate_dest_port=22
+
+[sshgate]
+myhost

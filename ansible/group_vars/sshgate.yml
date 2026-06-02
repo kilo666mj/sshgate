@@ -1,0 +1,10 @@
+---
+# sshgate tunables — override per host/group in inventory or here.
+sshgate_max_fingerprints: 0
+sshgate_listen_addr: "[::]"
+sshgate_source_port: 2222
+sshgate_dest_host: 127.0.0.1
+sshgate_dest_port: 22
+sshgate_routes:
+  - "{{ sshgate_listen_addr }}:{{ sshgate_source_port }}={{ sshgate_dest_host }}:{{ sshgate_dest_port }}"
+sshgate_allow_unknown: false

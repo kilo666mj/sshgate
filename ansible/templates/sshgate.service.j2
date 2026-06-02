@@ -1,0 +1,35 @@
+[Unit]
+Description=sshgate SSH fingerprinting proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ sshgate_user }}
+Group={{ sshgate_group }}
+ExecStart={{ sshgate_binary }} serve --db {{ sshgate_db }} --config {{ sshgate_config }}{% for route in sshgate_routes %} --route={{ route }}{% endfor %}{{ ' --allow-unknown' if sshgate_allow_unknown else '' }}
+Restart=on-failure
+RestartSec=2s
+StandardOutput=journal
+StandardError=journal
+LimitNOFILE=8192
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+PrivateDevices=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths={{ sshgate_data_dir }}
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

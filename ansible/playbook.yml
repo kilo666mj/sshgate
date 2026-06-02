@@ -1,0 +1,120 @@
+---
+- name: Deploy sshgate
+  hosts: sshgate
+  become: true
+  vars:
+    sshgate_user: sshgate
+    sshgate_group: sshgate
+    sshgate_data_dir: /var/lib/sshgate
+    sshgate_config_dir: /etc/sshgate
+    sshgate_binary: /usr/local/bin/sshgate
+    sshgate_db: "{{ sshgate_data_dir }}/sshgate.db"
+    sshgate_config: "{{ sshgate_config_dir }}/config.json"
+    sshgate_goos: linux
+    sshgate_goarch_map:
+      x86_64: amd64
+      aarch64: arm64
+      arm64: arm64
+      armv7l: arm
+      armv6l: arm
+    sshgate_goarch: "{{ sshgate_goarch_map.get(ansible_facts['architecture'], ansible_facts['architecture']) }}"
+    sshgate_build_output: "{{ playbook_dir }}/../sshgate-{{ sshgate_goos }}-{{ sshgate_goarch }}"
+
+  tasks:
+    - name: Build sshgate locally
+      ansible.builtin.command:
+        cmd: go build -trimpath -o {{ sshgate_build_output | quote }} .
+        chdir: "{{ playbook_dir }}/.."
+      environment:
+        CGO_ENABLED: "0"
+        GOOS: "{{ sshgate_goos }}"
+        GOARCH: "{{ sshgate_goarch }}"
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Create sshgate group
+      ansible.builtin.group:
+        name: "{{ sshgate_group }}"
+        system: true
+
+    - name: Create sshgate user
+      ansible.builtin.user:
+        name: "{{ sshgate_user }}"
+        group: "{{ sshgate_group }}"
+        home: "{{ sshgate_data_dir }}"
+        create_home: false
+        system: true
+        shell: /usr/sbin/nologin
+
+    - name: Create sshgate data directory
+      ansible.builtin.file:
+        path: "{{ sshgate_data_dir }}"
+        state: directory
+        owner: "{{ sshgate_user }}"
+        group: "{{ sshgate_group }}"
+        mode: "0750"
+
+    - name: Ensure sshgate data ownership
+      ansible.builtin.file:
+        path: "{{ sshgate_data_dir }}"
+        state: directory
+        owner: "{{ sshgate_user }}"
+        group: "{{ sshgate_group }}"
+        recurse: true
+
+    - name: Create sshgate config directory
+      ansible.builtin.file:
+        path: "{{ sshgate_config_dir }}"
+        state: directory
+        owner: root
+        group: "{{ sshgate_group }}"
+        mode: "0750"
+
+    - name: Install sshgate binary
+      ansible.builtin.copy:
+        src: "{{ sshgate_build_output }}"
+        dest: "{{ sshgate_binary }}"
+        owner: root
+        group: root
+        mode: "0755"
+      notify: Restart sshgate
+
+    - name: Install sshgate config
+      ansible.builtin.template:
+        src: templates/config.json.j2
+        dest: "{{ sshgate_config }}"
+        owner: root
+        group: "{{ sshgate_group }}"
+        mode: "0640"
+      notify: Restart sshgate
+
+    - name: Install systemd unit
+      ansible.builtin.template:
+        src: templates/sshgate.service.j2
+        dest: /etc/systemd/system/sshgate.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload systemd
+        - Restart sshgate
+
+    - name: Apply service changes before first start
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable and start sshgate
+      ansible.builtin.systemd:
+        name: sshgate
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart sshgate
+      ansible.builtin.systemd:
+        name: sshgate
+        state: restarted
