@@ -89,6 +89,13 @@
         mode: "0640"
       notify: Restart sshgate
 
+    - name: Seed approved sshgate fingerprints
+      ansible.builtin.command:
+        argv: "{{ [sshgate_binary, 'approve', '--db', sshgate_db, '--register'] + (((item.label | default('')) | length > 0) | ternary(['--label', item.label], [])) + [item.fingerprint] }}"
+      loop: "{{ sshgate_approved_fingerprints }}"
+      become_user: "{{ sshgate_user }}"
+      changed_when: false
+
     - name: Install systemd unit
       ansible.builtin.template:
         src: templates/sshgate.service.j2

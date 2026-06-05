@@ -130,6 +130,7 @@ sshgate_routes:
   - "[::]:2222=127.0.0.1:22"
 sshgate_allow_unknown: false
 sshgate_max_fingerprints: 100000
+sshgate_approved_fingerprints: []
 sshgate_goarch: amd64
 ```
 
@@ -145,6 +146,20 @@ architecture unless `sshgate_goarch` is overridden.
 The Ansible default is deny-first: unknown fingerprints are recorded as blocked
 and are not forwarded. Set `sshgate_allow_unknown: true` temporarily during
 enrollment if you want new clients to pass through before approval.
+
+You can also seed approved fingerprints during deployment:
+
+```yaml
+sshgate_approved_fingerprints:
+  - fingerprint: "0123456789abcdef0123456789abcdef"
+    label: "Alice laptop"
+  - fingerprint: "fedcba9876543210fedcba9876543210"
+    label: "CI deploy key"
+```
+
+Seeding is additive. The playbook approves the listed fingerprints with
+`--register`, preserving existing database entries and leaving fingerprints not
+listed in inventory unchanged.
 
 ## Flood Limits
 
