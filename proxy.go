@@ -183,13 +183,10 @@ func handleConn(client net.Conn, route Route, store *Store, allowUnknown bool, l
 		return
 	}
 
-	// Read the client identification and KEXINIT up front, before touching the
-	// backend. RFC 4253 lets a client send KEXINIT immediately after its banner
-	// without waiting for the server's, and OpenSSH does; reading both here means
-	// a blocked or pending fingerprint never opens a backend connection or learns
-	// the server's banner. A client that withholds KEXINIT until it sees the
-	// server's identification will time out here instead -- acceptable for this
-	// proxy's threat model.
+	// SSH clients commonly wait for the server identification before sending
+	// KEXINIT, so the proxy has to complete the version-string exchange before
+	// it can fingerprint the client. The gate still happens before the client's
+	// KEXINIT is forwarded to the backend.
 	clientReader := bufio.NewReader(client)
 	_ = client.SetReadDeadline(time.Now().Add(10 * time.Second))
 	clientID, err := readSSHIdentification(clientReader)
@@ -202,6 +199,37 @@ func handleConn(client net.Conn, route Route, store *Store, allowUnknown bool, l
 		}
 		return
 	}
+
+	backend, err := net.Dial("tcp", route.Backend)
+	if err != nil {
+		log.Printf("[%s] BACKEND %s: %v", clientIP, route.Backend, err)
+		return
+	}
+	defer backend.Close()
+
+	if _, err := backend.Write(clientID.bytes); err != nil {
+		log.Printf("[%s] BACKEND client identification write: %v", clientIP, err)
+		return
+	}
+
+	backendReader := bufio.NewReader(backend)
+	_ = backend.SetReadDeadline(time.Now().Add(10 * time.Second))
+	serverID, err := readSSHIdentification(backendReader)
+	_ = backend.SetReadDeadline(time.Time{})
+	if err != nil {
+		if isTimeout(err) {
+			log.Printf("[%s] BACKEND TIMEOUT awaiting SSH identification", clientIP)
+		} else {
+			log.Printf("[%s] BACKEND malformed SSH identification: %v", clientIP, err)
+		}
+		return
+	}
+	if _, err := client.Write(serverID.bytes); err != nil {
+		log.Printf("[%s] CLIENT server identification write: %v", clientIP, err)
+		return
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(10 * time.Second))
 	kex, err := readSSHKexInit(clientReader, clientID.id)
 	_ = client.SetReadDeadline(time.Time{})
 	if err != nil {
@@ -231,37 +259,6 @@ func handleConn(client net.Conn, route Route, store *Store, allowUnknown bool, l
 			return
 		}
 		log.Printf("[%s] PENDING allowed %s client=%q", clientIP, kex.fingerprint.Hash, kex.fingerprint.ClientID)
-	}
-
-	// Verdict allows the connection: dial the backend and replay the client
-	// identification + KEXINIT we already consumed.
-	backend, err := net.Dial("tcp", route.Backend)
-	if err != nil {
-		log.Printf("[%s] BACKEND %s: %v", clientIP, route.Backend, err)
-		return
-	}
-	defer backend.Close()
-
-	if _, err := backend.Write(clientID.bytes); err != nil {
-		log.Printf("[%s] BACKEND client identification write: %v", clientIP, err)
-		return
-	}
-
-	backendReader := bufio.NewReader(backend)
-	_ = backend.SetReadDeadline(time.Now().Add(10 * time.Second))
-	serverID, err := readSSHIdentification(backendReader)
-	_ = backend.SetReadDeadline(time.Time{})
-	if err != nil {
-		if isTimeout(err) {
-			log.Printf("[%s] BACKEND TIMEOUT awaiting SSH identification", clientIP)
-		} else {
-			log.Printf("[%s] BACKEND malformed SSH identification: %v", clientIP, err)
-		}
-		return
-	}
-	if _, err := client.Write(serverID.bytes); err != nil {
-		log.Printf("[%s] CLIENT server identification write: %v", clientIP, err)
-		return
 	}
 
 	if _, err := backend.Write(kex.bytes); err != nil {

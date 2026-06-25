@@ -13,8 +13,8 @@ import (
 
 // capturedClientHello and readSSHClientHello are test helpers: they read a
 // full client identification + KEXINIT from a single stream. Production code
-// reads the two phases separately (see handleConn) so it can apply a verdict
-// before dialing the backend.
+// reads the two phases separately (see handleConn) so it can relay the server
+// identification before waiting for client KEXINIT.
 type capturedClientHello struct {
 	fingerprint SSHFingerprint
 	bytes       []byte
