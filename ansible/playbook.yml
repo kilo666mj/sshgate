@@ -85,8 +85,17 @@
       ansible.builtin.command:
         argv: "{{ [sshgate_binary, 'approve', '--db', sshgate_db, '--register'] + (((item.label | default('')) | length > 0) | ternary(['--label', item.label], [])) + [item.fingerprint] }}"
       loop: "{{ sshgate_approved_fingerprints }}"
-      become_user: "{{ sshgate_user }}"
       changed_when: false
+
+    # The seed runs as root so Ansible does not need to become an unprivileged
+    # service account. Hand the database and WAL sidecars back before start.
+    - name: Ensure sshgate data ownership
+      ansible.builtin.file:
+        path: "{{ sshgate_data_dir }}"
+        state: directory
+        owner: "{{ sshgate_user }}"
+        group: "{{ sshgate_group }}"
+        recurse: true
 
     - name: Install systemd unit
       ansible.builtin.template:
