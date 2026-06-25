@@ -37,11 +37,6 @@ type SSHFingerprint struct {
 	FirstKexGuess bool
 }
 
-type capturedClientHello struct {
-	fingerprint SSHFingerprint
-	bytes       []byte
-}
-
 type capturedIdentification struct {
 	id    string
 	bytes []byte
@@ -50,22 +45,6 @@ type capturedIdentification struct {
 type capturedKexInit struct {
 	fingerprint SSHFingerprint
 	bytes       []byte
-}
-
-func readSSHClientHello(r io.Reader) (capturedClientHello, error) {
-	br := bufio.NewReader(r)
-	ident, err := readSSHIdentification(br)
-	if err != nil {
-		return capturedClientHello{}, err
-	}
-	kex, err := readSSHKexInit(br, ident.id)
-	if err != nil {
-		return capturedClientHello{}, err
-	}
-	return capturedClientHello{
-		fingerprint: kex.fingerprint,
-		bytes:       append(ident.bytes, kex.bytes...),
-	}, nil
 }
 
 func readSSHIdentification(br *bufio.Reader) (capturedIdentification, error) {

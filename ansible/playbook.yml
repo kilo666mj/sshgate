@@ -55,14 +55,6 @@
         group: "{{ sshgate_group }}"
         mode: "0750"
 
-    - name: Ensure sshgate data ownership
-      ansible.builtin.file:
-        path: "{{ sshgate_data_dir }}"
-        state: directory
-        owner: "{{ sshgate_user }}"
-        group: "{{ sshgate_group }}"
-        recurse: true
-
     - name: Create sshgate config directory
       ansible.builtin.file:
         path: "{{ sshgate_config_dir }}"

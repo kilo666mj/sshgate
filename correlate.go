@@ -35,15 +35,14 @@ func cmdCorrelate(args []string) {
 	if err != nil {
 		fatalf("open store: %v", err)
 	}
-	entries, err := store.List()
-	if err != nil {
-		fatalf("list fingerprints: %v", err)
-	}
-	fp, err := resolveFingerprint(store, fs.Arg(0))
+	fp, err := store.ResolveFingerprint(fs.Arg(0))
 	if err != nil {
 		fatalf("%v", err)
 	}
-	entry := entries[fp]
+	entry, err := store.get(fp)
+	if err != nil {
+		fatalf("load fingerprint: %v", err)
+	}
 	if len(entry.IPs) == 0 {
 		fatalf("fingerprint %s has no IPs to correlate", fp)
 	}

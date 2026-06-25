@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -33,7 +34,25 @@ type Entry struct {
 
 type Store struct {
 	path string
-	db   *sql.DB
+	// db is the writer handle, pinned to a single connection so writes
+	// serialize cleanly under SQLite. reader is a separate WAL read pool so
+	// hot-path lookups don't queue behind the writer.
+	db     *sql.DB
+	reader *sql.DB
+}
+
+// maxReaders bounds the read pool. WAL allows many concurrent readers
+// alongside the single writer.
+const maxReaders = 8
+
+// dsn builds a modernc sqlite DSN that applies the given pragmas on every
+// connection in the pool (PRAGMAs are otherwise per-connection state).
+func dsn(path string, pragmas ...string) string {
+	q := url.Values{}
+	for _, p := range pragmas {
+		q.Add("_pragma", p)
+	}
+	return path + "?" + q.Encode()
 }
 
 func NewStore(path string) (*Store, error) {
@@ -43,26 +62,52 @@ func NewStore(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", dsn(path,
+		"busy_timeout(5000)",
+		"foreign_keys(1)",
+		"journal_mode(WAL)",
+	))
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	store := &Store{path: path, db: db}
+
+	reader, err := sql.Open("sqlite", dsn(path,
+		"busy_timeout(5000)",
+		"query_only(1)",
+	))
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	reader.SetMaxOpenConns(maxReaders)
+	reader.SetMaxIdleConns(maxReaders)
+
+	store := &Store{path: path, db: db, reader: reader}
 	if err := store.init(); err != nil {
 		db.Close()
+		reader.Close()
 		return nil, err
 	}
 	return store, nil
 }
 
+// Close releases both connection pools.
+func (s *Store) Close() error {
+	werr := s.db.Close()
+	rerr := s.reader.Close()
+	if werr != nil {
+		return werr
+	}
+	return rerr
+}
+
 func (s *Store) init() error {
 	ctx := context.Background()
+	// Connection pragmas (busy_timeout, foreign_keys, journal_mode) are applied
+	// via the DSN so every pooled connection gets them; init only owns schema.
 	for _, stmt := range []string{
-		`PRAGMA busy_timeout = 5000`,
-		`PRAGMA foreign_keys = ON`,
-		`PRAGMA journal_mode = WAL`,
 		`CREATE TABLE IF NOT EXISTS fingerprints (
 			fp TEXT PRIMARY KEY,
 			status TEXT NOT NULL,
@@ -132,12 +177,45 @@ func (s *Store) addColumnIfMissing(ctx context.Context, table, column, def strin
 	return err
 }
 
+// entryColumns lists the fingerprints columns shared by every entry read,
+// in the order scanEntry expects them.
+const entryColumns = `status, label, first_seen, last_seen, client_id, raw, kex,
+	host_key, cipher_c2s, cipher_s2c, mac_c2s, mac_s2c,
+	compress_c2s, compress_s2c, first_kex_guess`
+
+// scanner is satisfied by both *sql.Row and *sql.Rows.
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+// scanEntry decodes the entryColumns (without IPs) from a row.
+func scanEntry(sc scanner) (Entry, error) {
+	var firstSeen, lastSeen string
+	var firstKexGuess int
+	var e Entry
+	if err := sc.Scan(
+		&e.Status, &e.Label, &firstSeen, &lastSeen, &e.ClientID, &e.Raw,
+		&e.Kex, &e.HostKey, &e.CipherC2S, &e.CipherS2C, &e.MACC2S, &e.MACS2C,
+		&e.CompressC2S, &e.CompressS2C, &firstKexGuess,
+	); err != nil {
+		return Entry{}, err
+	}
+	parsedFirstSeen, err := decodeTime(firstSeen)
+	if err != nil {
+		return Entry{}, fmt.Errorf("decode first_seen: %w", err)
+	}
+	parsedLastSeen, err := decodeTime(lastSeen)
+	if err != nil {
+		return Entry{}, fmt.Errorf("decode last_seen: %w", err)
+	}
+	e.FirstSeen = Time{Time: parsedFirstSeen}
+	e.LastSeen = Time{Time: parsedLastSeen}
+	e.FirstKexGuess = firstKexGuess != 0
+	return e, nil
+}
+
 func (s *Store) List() (map[string]Entry, error) {
-	rows, err := s.db.Query(`
-		SELECT fp, status, label, first_seen, last_seen, client_id, raw, kex,
-			host_key, cipher_c2s, cipher_s2c, mac_c2s, mac_s2c,
-			compress_c2s, compress_s2c, first_kex_guess
-		FROM fingerprints`)
+	rows, err := s.reader.Query(`SELECT fp, ` + entryColumns + ` FROM fingerprints`)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +223,8 @@ func (s *Store) List() (map[string]Entry, error) {
 
 	out := make(map[string]Entry)
 	for rows.Next() {
-		var fp, firstSeen, lastSeen string
+		var fp string
+		var firstSeen, lastSeen string
 		var firstKexGuess int
 		var e Entry
 		if err := rows.Scan(
@@ -172,15 +251,36 @@ func (s *Store) List() (map[string]Entry, error) {
 		return nil, err
 	}
 
+	// Load every IP in one query and attach, instead of a per-fingerprint
+	// lookup (which was O(N) round-trips for N fingerprints).
+	ipsByFP, err := s.allIPs()
+	if err != nil {
+		return nil, err
+	}
 	for fp, e := range out {
-		ips, err := s.listIPs(fp)
-		if err != nil {
-			return nil, err
-		}
-		e.IPs = ips
+		e.IPs = ipsByFP[fp]
 		out[fp] = e
 	}
 	return out, nil
+}
+
+// allIPs returns every fingerprint's IPs in one query, keyed by fingerprint
+// hash and sorted by IP within each entry.
+func (s *Store) allIPs() (map[string][]string, error) {
+	rows, err := s.reader.Query(`SELECT fp, ip FROM fingerprint_ips ORDER BY fp, ip`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string][]string)
+	for rows.Next() {
+		var fp, ip string
+		if err := rows.Scan(&fp, &ip); err != nil {
+			return nil, err
+		}
+		out[fp] = append(out[fp], ip)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) Observe(fp SSHFingerprint, ip string, blockUnknown bool) (Entry, error) {
@@ -200,7 +300,7 @@ func (s *Store) Observe(fp SSHFingerprint, ip string, blockUnknown bool) (Entry,
 	// last_seen, leaving status, label, and first_seen intact. This preserves a
 	// prior verdict (and a pre-approved placeholder row from UpsertStatus) while
 	// still recording the latest handshake details.
-	if _, err := tx.ExecContext(ctx, `
+	row := tx.QueryRowContext(ctx, `
 		INSERT INTO fingerprints (
 			fp, status, label, first_seen, last_seen, client_id, raw, kex,
 			host_key, cipher_c2s, cipher_s2c, mac_c2s, mac_s2c,
@@ -218,11 +318,16 @@ func (s *Store) Observe(fp SSHFingerprint, ip string, blockUnknown bool) (Entry,
 			mac_s2c = excluded.mac_s2c,
 			compress_c2s = excluded.compress_c2s,
 			compress_s2c = excluded.compress_s2c,
-			first_kex_guess = excluded.first_kex_guess`,
+			first_kex_guess = excluded.first_kex_guess
+		RETURNING `+entryColumns,
 		fp.Hash, status, now, now, fp.ClientID, fp.Raw, fp.Kex,
 		fp.HostKey, fp.CipherC2S, fp.CipherS2C, fp.MACC2S, fp.MACS2C,
 		fp.CompressC2S, fp.CompressS2C, boolInt(fp.FirstKexGuess),
-	); err != nil {
+	)
+	// Scan the upserted row (status/label may differ from what we inserted, e.g.
+	// a pre-approved placeholder) before committing.
+	entry, err := scanEntry(row)
+	if err != nil {
 		return Entry{}, err
 	}
 	if ip != "" {
@@ -230,42 +335,24 @@ func (s *Store) Observe(fp SSHFingerprint, ip string, blockUnknown bool) (Entry,
 			return Entry{}, err
 		}
 	}
+	ips, err := listIPsFrom(tx, fp.Hash)
+	if err != nil {
+		return Entry{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return Entry{}, err
 	}
-
-	return s.get(fp.Hash)
+	entry.IPs = ips
+	return entry, nil
 }
 
-// get loads a single fingerprint entry by hash. Used on the proxy hot path so
-// each connection costs one indexed lookup instead of a full-table scan.
+// get loads a single fingerprint entry by hash via the read pool. Used on the
+// proxy hot path so each lookup is one indexed read off the writer.
 func (s *Store) get(fp string) (Entry, error) {
-	var firstSeen, lastSeen string
-	var firstKexGuess int
-	var e Entry
-	err := s.db.QueryRow(`
-		SELECT status, label, first_seen, last_seen, client_id, raw, kex,
-			host_key, cipher_c2s, cipher_s2c, mac_c2s, mac_s2c,
-			compress_c2s, compress_s2c, first_kex_guess
-		FROM fingerprints WHERE fp = ?`, fp).Scan(
-		&e.Status, &e.Label, &firstSeen, &lastSeen, &e.ClientID, &e.Raw,
-		&e.Kex, &e.HostKey, &e.CipherC2S, &e.CipherS2C, &e.MACC2S, &e.MACS2C,
-		&e.CompressC2S, &e.CompressS2C, &firstKexGuess,
-	)
+	e, err := scanEntry(s.reader.QueryRow(`SELECT `+entryColumns+` FROM fingerprints WHERE fp = ?`, fp))
 	if err != nil {
 		return Entry{}, err
 	}
-	parsedFirstSeen, err := decodeTime(firstSeen)
-	if err != nil {
-		return Entry{}, fmt.Errorf("decode first_seen for %s: %w", fp, err)
-	}
-	parsedLastSeen, err := decodeTime(lastSeen)
-	if err != nil {
-		return Entry{}, fmt.Errorf("decode last_seen for %s: %w", fp, err)
-	}
-	e.FirstSeen = Time{Time: parsedFirstSeen}
-	e.LastSeen = Time{Time: parsedLastSeen}
-	e.FirstKexGuess = firstKexGuess != 0
 	ips, err := s.listIPs(fp)
 	if err != nil {
 		return Entry{}, err
@@ -350,7 +437,17 @@ func (s *Store) PruneToLimit(max int) (int, error) {
 }
 
 func (s *Store) listIPs(fp string) ([]string, error) {
-	rows, err := s.db.Query(`SELECT ip FROM fingerprint_ips WHERE fp = ? ORDER BY ip`, fp)
+	return listIPsFrom(s.reader, fp)
+}
+
+// ipQuerier is satisfied by *sql.DB and *sql.Tx, so listIPsFrom can read either
+// the committed table or an open transaction.
+type ipQuerier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+func listIPsFrom(q ipQuerier, fp string) ([]string, error) {
+	rows, err := q.Query(`SELECT ip FROM fingerprint_ips WHERE fp = ? ORDER BY ip`, fp)
 	if err != nil {
 		return nil, err
 	}
@@ -365,6 +462,41 @@ func (s *Store) listIPs(fp string) ([]string, error) {
 		ips = append(ips, ip)
 	}
 	return ips, rows.Err()
+}
+
+// ResolveFingerprint maps a full hash or unambiguous hex prefix to the stored
+// fingerprint, in a single query. An exact match always wins over prefix
+// matches; otherwise the prefix must match exactly one entry.
+func (s *Store) ResolveFingerprint(query string) (string, error) {
+	rows, err := s.reader.Query(
+		`SELECT fp FROM fingerprints WHERE substr(fp, 1, length(?1)) = ?1 ORDER BY fp`, query)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	var matches []string
+	for rows.Next() {
+		var fp string
+		if err := rows.Scan(&fp); err != nil {
+			return "", err
+		}
+		if fp == query {
+			return fp, nil
+		}
+		matches = append(matches, fp)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("fingerprint not found: %s", query)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("ambiguous fingerprint prefix %q matches: %v", query, matches)
+	}
 }
 
 func requireAffected(res sql.Result, fp string) error {

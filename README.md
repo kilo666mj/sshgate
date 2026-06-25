@@ -41,6 +41,13 @@ During enrollment, add `--allow-unknown` to record new fingerprints as pending
 while still forwarding them. After approving known clients, remove
 `--allow-unknown` to block pending and blocked fingerprints.
 
+`sshgate` reads the client identification string and `SSH_MSG_KEXINIT` and
+applies the verdict *before* it dials the backend, so a blocked or pending
+client never opens a connection to your real `sshd` and never sees its banner.
+This relies on the client sending its KEXINIT immediately after its banner (RFC
+4253; OpenSSH does). A client that withholds KEXINIT until it receives the
+server's identification will time out at the proxy.
+
 ## Manage Fingerprints
 
 ```bash

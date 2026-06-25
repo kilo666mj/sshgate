@@ -147,7 +147,7 @@ func cmdSetStatus(args []string, status string) {
 		return
 	}
 
-	fp, err := resolveFingerprint(store, fs.Arg(0))
+	fp, err := store.ResolveFingerprint(fs.Arg(0))
 	if err != nil {
 		fatalf("%v", err)
 	}
@@ -186,7 +186,7 @@ func cmdLabel(args []string) {
 	if err != nil {
 		fatalf("open store: %v", err)
 	}
-	fp, err := resolveFingerprint(store, fs.Arg(0))
+	fp, err := store.ResolveFingerprint(fs.Arg(0))
 	if err != nil {
 		fatalf("%v", err)
 	}
@@ -207,37 +207,12 @@ func cmdDelete(args []string) {
 	if err != nil {
 		fatalf("open store: %v", err)
 	}
-	fp, err := resolveFingerprint(store, fs.Arg(0))
+	fp, err := store.ResolveFingerprint(fs.Arg(0))
 	if err != nil {
 		fatalf("%v", err)
 	}
 	if err := store.Delete(fp); err != nil {
 		fatalf("delete: %v", err)
-	}
-}
-
-func resolveFingerprint(store *Store, query string) (string, error) {
-	entries, err := store.List()
-	if err != nil {
-		return "", err
-	}
-	if _, ok := entries[query]; ok {
-		return query, nil
-	}
-	var matches []string
-	for fp := range entries {
-		if len(query) <= len(fp) && fp[:len(query)] == query {
-			matches = append(matches, fp)
-		}
-	}
-	sort.Strings(matches)
-	switch len(matches) {
-	case 0:
-		return "", fmt.Errorf("fingerprint not found: %s", query)
-	case 1:
-		return matches[0], nil
-	default:
-		return "", fmt.Errorf("ambiguous fingerprint prefix %q matches: %v", query, matches)
 	}
 }
 

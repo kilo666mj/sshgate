@@ -161,6 +161,32 @@ func TestStorePruneToLimitPreservesApproved(t *testing.T) {
 	}
 }
 
+func TestStoreResolveFingerprint(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "sshgate.db"))
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	for _, hash := range []string{"abcd1111", "abcd2222", "ef009999"} {
+		fp := SSHFingerprint{Hash: hash, ClientID: "SSH-2.0-test", Raw: "a;b;c;d"}
+		if _, err := store.Observe(fp, "203.0.113.10", false); err != nil {
+			t.Fatalf("Observe(%s): %v", hash, err)
+		}
+	}
+
+	if got, err := store.ResolveFingerprint("ef009999"); err != nil || got != "ef009999" {
+		t.Fatalf("exact: got %q err %v", got, err)
+	}
+	if got, err := store.ResolveFingerprint("ef"); err != nil || got != "ef009999" {
+		t.Fatalf("unique prefix: got %q err %v", got, err)
+	}
+	if _, err := store.ResolveFingerprint("abcd"); err == nil {
+		t.Fatal("ambiguous prefix should error")
+	}
+	if _, err := store.ResolveFingerprint("zz"); err == nil {
+		t.Fatal("missing prefix should error")
+	}
+}
+
 func TestStoreObserveBlocksUnknownWhenConfigured(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "sshgate.db"))
 	if err != nil {

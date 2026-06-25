@@ -1,13 +1,40 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"io"
 	"strings"
 	"testing"
 )
+
+// capturedClientHello and readSSHClientHello are test helpers: they read a
+// full client identification + KEXINIT from a single stream. Production code
+// reads the two phases separately (see handleConn) so it can apply a verdict
+// before dialing the backend.
+type capturedClientHello struct {
+	fingerprint SSHFingerprint
+	bytes       []byte
+}
+
+func readSSHClientHello(r io.Reader) (capturedClientHello, error) {
+	br := bufio.NewReader(r)
+	ident, err := readSSHIdentification(br)
+	if err != nil {
+		return capturedClientHello{}, err
+	}
+	kex, err := readSSHKexInit(br, ident.id)
+	if err != nil {
+		return capturedClientHello{}, err
+	}
+	return capturedClientHello{
+		fingerprint: kex.fingerprint,
+		bytes:       append(ident.bytes, kex.bytes...),
+	}, nil
+}
 
 func TestReadSSHClientHelloComputesStableKexFingerprint(t *testing.T) {
 	raw := strings.Join([]string{
