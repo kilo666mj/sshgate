@@ -19,7 +19,8 @@ type AppConfig struct {
 	// MaxFingerprints caps stored fingerprint entries. 0 applies
 	// defaultMaxFingerprints; -1 means unlimited. Approved entries are never
 	// evicted; oldest non-approved entries are pruned first.
-	MaxFingerprints int `json:"max_fingerprints"`
+	MaxFingerprints int                `json:"max_fingerprints"`
+	ControlPlane    ControlPlaneConfig `json:"control_plane"`
 }
 
 func loadConfig(path string) (AppConfig, error) {

@@ -4,10 +4,19 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+# Type=notify + NotifyAccess=all so a zero-downtime upgrade works: after a
+# SIGHUP reload, tableflip re-execs the binary and the new server (a child of
+# the original main PID) reports its own PID via sd_notify MAINPID. systemd then
+# tracks the new process. NotifyAccess=all is required because that notification
+# arrives from a process systemd does not yet consider the main one.
+Type=notify
+NotifyAccess=all
 User={{ sshgate_user }}
 Group={{ sshgate_group }}
 ExecStart={{ sshgate_binary }} serve --db {{ sshgate_db }} --config {{ sshgate_config }}{% for route in sshgate_routes %} --route={{ route }}{% endfor %}{{ ' --allow-unknown' if sshgate_allow_unknown else '' }}
+# Reload = graceful upgrade: SIGHUP hands off to a freshly installed binary
+# without dropping existing SSH sessions.
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2s
 StandardOutput=journal

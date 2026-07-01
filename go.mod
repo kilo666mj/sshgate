@@ -2,7 +2,10 @@ module sshgate
 
 go 1.26.3
 
-require modernc.org/sqlite v1.53.0
+require (
+	github.com/cloudflare/tableflip v1.2.3
+	modernc.org/sqlite v1.53.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
