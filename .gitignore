@@ -7,3 +7,4 @@ sshgate.db-*
 
 # Real ansible inventory holds host names; commit inventory.example instead.
 ansible/inventory
+ansible/host_vars/

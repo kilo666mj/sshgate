@@ -111,6 +111,14 @@
     - name: Apply service changes before first start
       ansible.builtin.meta: flush_handlers
 
+    - name: Reset connection after sshgate restart
+      ansible.builtin.meta: reset_connection
+
+    - name: Wait for sshgate to accept connections again
+      ansible.builtin.wait_for_connection:
+        delay: 2
+        timeout: 30
+
     - name: Enable and start sshgate
       ansible.builtin.systemd:
         name: sshgate
@@ -122,7 +130,16 @@
       ansible.builtin.systemd:
         daemon_reload: true
 
+    # reload-or-restart performs a graceful upgrade when sshgate is already
+    # running: systemctl runs ExecReload (SIGHUP), tableflip re-execs the new
+    # binary and hands off the listening sockets, and existing SSH sessions —
+    # including Ansible's own connection when it runs through sshgate — survive.
+    # It falls back to a start/restart when the service is not yet running (e.g.
+    # first deploy). Fire-and-forget so a rare non-graceful restart cannot hang
+    # the play if the control connection blips.
     - name: Restart sshgate
-      ansible.builtin.systemd:
-        name: sshgate
-        state: restarted
+      ansible.builtin.command:
+        cmd: systemctl reload-or-restart sshgate
+      changed_when: true
+      async: 45
+      poll: 0

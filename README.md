@@ -90,7 +90,13 @@ Put flags before the fingerprint argument.
 
 ```json
 {
-  "max_fingerprints": 100000
+  "max_fingerprints": 100000,
+  "control_plane": {
+    "url": "https://gatehub.example.com",
+    "instance_id": "public-ssh",
+    "token": "replace-with-node-token",
+    "sync_interval": "30s"
+  }
 }
 ```
 
@@ -99,6 +105,13 @@ applies a built-in cap of 100000, which bounds disk growth from randomized
 KEXINIT material; set `-1` for unlimited storage. When the store exceeds the
 cap, the oldest non-approved entries are pruned first; approved fingerprints are
 never pruned.
+
+When `control_plane.url` is set, `sshgate` syncs observed fingerprints to
+`gatehub` and pulls approval decisions. Set `token` for bearer-token auth, or
+set `client_cert`, `client_key`, and `ca` for mTLS auth. If the block is
+omitted, sync is disabled and local CLI/database behavior is unchanged. The
+optional `server_name` field overrides TLS server-name verification when the URL
+host does not match the server certificate.
 
 ## Correlate
 
@@ -135,6 +148,7 @@ sshgate_routes:
   - "[::]:2222=127.0.0.1:22"
 sshgate_allow_unknown: false
 sshgate_max_fingerprints: 100000
+sshgate_control_plane: {}
 sshgate_approved_fingerprints: []
 sshgate_goarch: amd64
 ```
@@ -165,6 +179,44 @@ sshgate_approved_fingerprints:
 Seeding is additive. The playbook approves the listed fingerprints with
 `--register`, preserving existing database entries and leaving fingerprints not
 listed in inventory unchanged.
+
+## Graceful Upgrades
+
+Because `sshgate` sits inline in the SSH data path, a plain process restart tears
+down every live SSH session it is proxying — unlike restarting `sshd` itself,
+whose existing sessions run in separate child processes and survive.
+
+To get the same "restart without dropping connections" behavior, `sshgate` uses
+[tableflip](https://github.com/cloudflare/tableflip). On `SIGHUP` it re-execs the
+binary on disk (picking up a newly installed version), passes the listening
+sockets to the new process, and keeps the old process alive to finish serving
+its existing connections. New connections go to the new process immediately, so
+none are refused during the handoff.
+
+```bash
+# Trigger a zero-downtime upgrade of a running instance
+kill -HUP <pid>
+# or, under systemd:
+systemctl reload sshgate
+```
+
+The old process stops accepting, stops its background database writers, and waits
+for its remaining sessions to close before exiting. `--drain-timeout` bounds that
+wait (default `1h`, `0` waits indefinitely) so departing processes cannot pile up
+after repeated upgrades while a long-lived session stays open — analogous to
+nginx's `worker_shutdown_timeout`. During the drain window you may briefly see two
+`sshgate` processes, which is expected.
+
+The systemd unit is `Type=notify` with `NotifyAccess=all`: after an upgrade the
+new server reports its PID to systemd via `sd_notify`, so `systemctl` keeps
+tracking the process that is actually serving. The Ansible deployment reloads
+(rather than restarts) on binary and config changes, so a deploy does not drop
+active sessions — including Ansible's own connection when it runs through
+`sshgate`.
+
+Note that fingerprint approve/block changes never require a restart at all: each
+new connection reads its verdict from the database live. Only binary upgrades and
+`--route`/config changes need the process to reload.
 
 ## Flood Limits
 

@@ -23,7 +23,7 @@ DRY_RUN=0
 APPROVED_FINGERPRINTS=(
 	"aaf62b02afeaa8df0687aa49b07825f8|macbook"
 	"da077e892bd3189b77ba40af5a9a807e|debian13-servers"
-    "117974a5daef83386fe315f08177932a|desktop"
+	"117974a5daef83386fe315f08177932a|desktop"
 )
 
 usage() {
