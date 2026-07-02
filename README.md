@@ -2,6 +2,8 @@
 
 <p align="center">
   <img src="docs/art/sshgate-mark.png" alt="sshgate mark" width="260">
+  <br>
+  <img src="docs/art/porter-mascot.png" alt="Porter mascot for the gate tools" width="320">
 </p>
 
 > **Written with AI.** This project was developed with the help of an AI
