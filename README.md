@@ -1,5 +1,9 @@
 # sshgate
 
+<p align="center">
+  <img src="docs/art/porter-mascot.png" alt="Porter mascot for the gate tools" width="260">
+</p>
+
 > **Written with AI.** This project was developed with the help of an AI
 > assistant (Anthropic's Claude, via Claude Code). The code has been reviewed
 > and tested, but treat it accordingly: read it before you run it, and see the
@@ -14,6 +18,10 @@ This is not authentication. SSH client fingerprints are spoofable, just like
 TLS JA3/JA4 fingerprints. `sshgate` is intended as a friction layer against
 generic scanners and unexpected client stacks; `sshd` still performs the real
 user and key authentication.
+
+`sshgate` can run standalone or report observations to
+[Gatehub](https://github.com/kilo666mj/gatehub), the shared control plane for
+the `*gate` tools.
 
 ## Build
 
