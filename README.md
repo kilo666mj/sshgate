@@ -1,7 +1,9 @@
 # sshgate
 
 <p align="center">
-  <img src="docs/art/porter-mascot.png" alt="Porter mascot for the gate tools" width="260">
+  <img src="docs/art/sshgate-mark.png" alt="sshgate mark" width="150">
+  <br>
+  <img src="docs/art/porter-mascot.png" alt="Porter mascot for the gate tools" width="220">
 </p>
 
 > **Written with AI.** This project was developed with the help of an AI
