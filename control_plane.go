@@ -16,6 +16,7 @@ import (
 )
 
 const defaultControlPlaneSyncInterval = 30 * time.Second
+const maxControlPlaneObservationValues = 128
 
 type ControlPlaneConfig struct {
 	URL          string `json:"url"`
@@ -193,7 +194,7 @@ func sshObservation(fp string, entry Entry) controlPlaneObservation {
 		Label:       entry.Label,
 		FirstSeen:   entry.FirstSeen.UTC().Format(time.RFC3339Nano),
 		LastSeen:    entry.LastSeen.UTC().Format(time.RFC3339Nano),
-		IPs:         entry.IPs,
+		IPs:         limitedStrings(entry.IPs, maxControlPlaneObservationValues),
 		Metadata: map[string]any{
 			"client_id":       entry.ClientID,
 			"raw":             entry.Raw,
@@ -208,6 +209,15 @@ func sshObservation(fp string, entry Entry) controlPlaneObservation {
 			"first_kex_guess": entry.FirstKexGuess,
 		},
 	}
+}
+
+func limitedStrings(values []string, max int) []string {
+	if max <= 0 || len(values) <= max {
+		return values
+	}
+	out := make([]string, max)
+	copy(out, values[:max])
+	return out
 }
 
 func (cfg ControlPlaneConfig) validate() error {
