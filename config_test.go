@@ -59,14 +59,16 @@ func TestLoadConfigParsesControlPlane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if cfg.ControlPlane.InstanceID != "public-ssh" || cfg.ControlPlane.interval() != 45*time.Second {
+	// URL construction and interval defaulting are gatekit's, tested there.
+	// What matters here is that sshgate's config file still decodes into the
+	// shared type with every field populated.
+	if cfg.ControlPlane.InstanceID != "public-ssh" || cfg.ControlPlane.Interval() != 45*time.Second {
 		t.Fatalf("control plane config = %+v", cfg.ControlPlane)
 	}
-	u, err := controlPlaneURL(cfg.ControlPlane.URL, "/v1/policy", cfg.ControlPlane.InstanceID, "cursor")
-	if err != nil {
-		t.Fatalf("controlPlaneURL: %v", err)
+	if cfg.ControlPlane.URL != "https://gatehub.example.com/base" {
+		t.Fatalf("control plane url = %q", cfg.ControlPlane.URL)
 	}
-	if want := "https://gatehub.example.com/base/v1/policy?instance_id=public-ssh&since=cursor"; u != want {
-		t.Fatalf("controlPlaneURL = %q, want %q", u, want)
+	if err := cfg.ControlPlane.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
 	}
 }

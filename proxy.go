@@ -16,6 +16,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kilo666mj/gatekit/controlplane"
+	"github.com/kilo666mj/gatekit/ratelimit"
+	"github.com/kilo666mj/gatekit/semaphore"
+	"github.com/kilo666mj/gatekit/store"
+
 	"github.com/cloudflare/tableflip"
 )
 
@@ -112,7 +117,7 @@ func cmdServe(args []string) {
 
 	log.Printf("sshgate version: %s", version)
 	log.Printf("database: %s", *dbPath)
-	store, err := NewStore(*dbPath)
+	st, err := NewStore(*dbPath)
 	if err != nil {
 		fatalf("open store: %v", err)
 	}
@@ -132,7 +137,7 @@ func cmdServe(args []string) {
 	if cfg.MaxFingerprints > 0 {
 		log.Printf("max fingerprints: %d", cfg.MaxFingerprints)
 		prune := func() {
-			if n, err := store.PruneToLimit(cfg.MaxFingerprints); err != nil {
+			if n, err := st.PruneToLimit(cfg.MaxFingerprints); err != nil {
 				log.Printf("prune fingerprints: %v", err)
 			} else if n > 0 {
 				log.Printf("pruned %d fingerprint(s) over limit %d", n, cfg.MaxFingerprints)
@@ -152,11 +157,13 @@ func cmdServe(args []string) {
 			}
 		}()
 	}
-	startControlPlaneSync(bgCtx, store, cfg.ControlPlane)
+	if err := controlplane.Start(bgCtx, st, cfg.ControlPlane); err != nil {
+		log.Fatalf("control plane: %v", err)
+	}
 
-	limiter := newRateLimiter(connRatePerIP, connBurstPerIP, rateLimitTTL)
-	go limiter.runSweeper(rateSweepPeriod)
-	sem := newSemaphore(maxConcurrentConns)
+	limiter := ratelimit.New(connRatePerIP, connBurstPerIP, rateLimitTTL)
+	go limiter.RunSweeper(rateSweepPeriod, bgCtx.Done())
+	sem := semaphore.New(maxConcurrentConns)
 
 	// connWG tracks in-flight connections so the drain phase can wait for them.
 	var connWG sync.WaitGroup
@@ -169,7 +176,7 @@ func cmdServe(args []string) {
 		}
 		listeners = append(listeners, ln)
 		log.Printf("LISTEN %s -> %s", route.Listen, route.Backend)
-		go serveListener(ln, route, store, *allowUnknown, limiter, sem, &connWG)
+		go serveListener(ln, route, st, *allowUnknown, limiter, sem, &connWG)
 	}
 
 	if err := upg.Ready(); err != nil {
@@ -199,7 +206,7 @@ func cmdServe(args []string) {
 		log.Printf("upgrade: draining in-flight connections (timeout %s)", timeout)
 	}
 	drainConnections(&connWG, timeout)
-	if err := store.Close(); err != nil {
+	if err := st.Close(); err != nil {
 		log.Printf("shutdown: close store: %v", err)
 	}
 }
@@ -226,7 +233,7 @@ func drainConnections(connWG *sync.WaitGroup, timeout time.Duration) {
 	}
 }
 
-func serveListener(ln net.Listener, route Route, store *Store, allowUnknown bool, limiter *rateLimiter, sem *semaphore, connWG *sync.WaitGroup) {
+func serveListener(ln net.Listener, route Route, st *store.Store, allowUnknown bool, limiter *ratelimit.Limiter, sem *semaphore.Semaphore, connWG *sync.WaitGroup) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -239,7 +246,7 @@ func serveListener(ln net.Listener, route Route, store *Store, allowUnknown bool
 			continue
 		}
 		clientIP := remoteIP(conn.RemoteAddr())
-		if !sem.acquire() {
+		if !sem.Acquire() {
 			log.Printf("[%s] OVERLOAD dropping connection", clientIP)
 			conn.Close()
 			continue
@@ -247,16 +254,16 @@ func serveListener(ln net.Listener, route Route, store *Store, allowUnknown bool
 		connWG.Add(1)
 		go func() {
 			defer connWG.Done()
-			defer sem.release()
-			handleConn(conn, route, store, allowUnknown, limiter)
+			defer sem.Release()
+			handleConn(conn, route, st, allowUnknown, limiter)
 		}()
 	}
 }
 
-func handleConn(client net.Conn, route Route, store *Store, allowUnknown bool, limiter *rateLimiter) {
+func handleConn(client net.Conn, route Route, st *store.Store, allowUnknown bool, limiter *ratelimit.Limiter) {
 	defer client.Close()
 	clientIP := remoteIP(client.RemoteAddr())
-	if !limiter.allow(clientIP) {
+	if !limiter.Allow(clientIP) {
 		log.Printf("[%s] RATELIMIT dropping connection", clientIP)
 		return
 	}
@@ -319,7 +326,11 @@ func handleConn(client net.Conn, route Route, store *Store, allowUnknown bool, l
 		return
 	}
 
-	entry, err := store.Observe(kex.fingerprint, clientIP, !allowUnknown)
+	entry, err := st.Observe(store.Observation{
+		Fingerprint: kex.fingerprint.Hash,
+		IP:          clientIP,
+		Meta:        kex.fingerprint.toMeta(),
+	}, !allowUnknown)
 	if err != nil {
 		log.Printf("[%s] BLOCKED store error: %v", clientIP, err)
 		return

@@ -1,203 +1,159 @@
 package main
 
 import (
+	"database/sql"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"github.com/kilo666mj/gatekit/store"
+
+	// Seeding a legacy schema opens SQLite directly rather than through
+	// gatekit, so register the driver here instead of relying on gatekit's
+	// choice of driver staying the same.
+	_ "modernc.org/sqlite"
 )
 
-func TestStoreObserveDefaultsToPendingAndTracksIPs(t *testing.T) {
-	store, err := NewStore(filepath.Join(t.TempDir(), "sshgate.db"))
-	if err != nil {
-		t.Fatalf("NewStore() error = %v", err)
-	}
-	fp := SSHFingerprint{Hash: "abc123", ClientID: "SSH-2.0-test", Raw: "a;b;c;d"}
-	entry, err := store.Observe(fp, "203.0.113.10", false)
-	if err != nil {
-		t.Fatalf("Observe() error = %v", err)
-	}
-	if entry.Status != StatusPending {
-		t.Fatalf("status = %q, want %q", entry.Status, StatusPending)
-	}
-	if err := store.SetStatus("abc123", StatusApproved, "laptop"); err != nil {
-		t.Fatalf("SetStatus() error = %v", err)
-	}
-	entry, err = store.Observe(fp, "203.0.113.11", false)
-	if err != nil {
-		t.Fatalf("Observe() error = %v", err)
-	}
-	if entry.Status != StatusApproved || entry.Label != "laptop" {
-		t.Fatalf("entry = %+v", entry)
-	}
-	if len(entry.IPs) != 2 {
-		t.Fatalf("IPs = %v, want two", entry.IPs)
+// The store itself is tested in gatekit. What needs covering here is the
+// SSH-specific adapter: that a fingerprinted KEXINIT survives a round trip
+// through the untyped metadata bag, and that a database written by the
+// pre-gatekit sshgate still reads correctly through it.
+
+func testFingerprint() SSHFingerprint {
+	return SSHFingerprint{
+		Hash:          "0123456789abcdef0123456789abcdef",
+		Raw:           "raw-kexinit-blob",
+		ClientID:      "SSH-2.0-OpenSSH_9.6",
+		Kex:           "curve25519-sha256,ecdh-sha2-nistp256",
+		HostKey:       "ssh-ed25519,rsa-sha2-512",
+		CipherC2S:     "chacha20-poly1305@openssh.com",
+		CipherS2C:     "aes256-gcm@openssh.com",
+		MACC2S:        "hmac-sha2-256-etm@openssh.com",
+		MACS2C:        "hmac-sha2-512-etm@openssh.com",
+		CompressC2S:   "none",
+		CompressS2C:   "zlib@openssh.com",
+		FirstKexGuess: true,
 	}
 }
 
-func TestStoreUpsertStatusPreApprovesUnobservedFingerprint(t *testing.T) {
-	store, err := NewStore(filepath.Join(t.TempDir(), "sshgate.db"))
-	if err != nil {
-		t.Fatalf("NewStore() error = %v", err)
-	}
-
-	const hash = "abc123"
-	if err := store.UpsertStatus(hash, StatusApproved, "ci-runner"); err != nil {
-		t.Fatalf("UpsertStatus() error = %v", err)
-	}
-
-	// First connection keeps the pre-approved status and fills in metadata.
-	fp := SSHFingerprint{Hash: hash, ClientID: "SSH-2.0-test", Raw: "a;b;c;d", Kex: "curve25519"}
-	entry, err := store.Observe(fp, "203.0.113.10", true)
-	if err != nil {
-		t.Fatalf("Observe() error = %v", err)
-	}
-	if entry.Status != StatusApproved {
-		t.Fatalf("status = %q, want %q", entry.Status, StatusApproved)
-	}
-	if entry.Label != "ci-runner" {
-		t.Fatalf("label = %q, want %q", entry.Label, "ci-runner")
-	}
-	if entry.Raw != "a;b;c;d" || entry.Kex != "curve25519" {
-		t.Fatalf("metadata not filled: %+v", entry)
-	}
-	if len(entry.IPs) != 1 {
-		t.Fatalf("IPs = %v, want one", entry.IPs)
-	}
-}
-
-func TestStoreUpsertStatusUpdatesExistingAndKeepsLabel(t *testing.T) {
-	store, err := NewStore(filepath.Join(t.TempDir(), "sshgate.db"))
-	if err != nil {
-		t.Fatalf("NewStore() error = %v", err)
-	}
-
-	const hash = "abc123"
-	if err := store.UpsertStatus(hash, StatusApproved, "ci-runner"); err != nil {
-		t.Fatalf("UpsertStatus() initial error = %v", err)
-	}
-	// Re-running with an empty label must change status but preserve the label.
-	if err := store.UpsertStatus(hash, StatusBlocked, ""); err != nil {
-		t.Fatalf("UpsertStatus() update error = %v", err)
-	}
-
-	entries, err := store.List()
-	if err != nil {
-		t.Fatalf("List() error = %v", err)
-	}
-	entry := entries[hash]
-	if entry.Status != StatusBlocked {
-		t.Fatalf("status = %q, want %q", entry.Status, StatusBlocked)
-	}
-	if entry.Label != "ci-runner" {
-		t.Fatalf("label = %q, want %q", entry.Label, "ci-runner")
-	}
-}
-
-func TestStoreReloadsExternalStatusChanges(t *testing.T) {
+func TestSSHFingerprintRoundTripsThroughStore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sshgate.db")
-	daemonStore, err := NewStore(path)
+	st, err := NewStore(path)
 	if err != nil {
-		t.Fatalf("NewStore daemon: %v", err)
+		t.Fatalf("NewStore: %v", err)
 	}
-	fp := SSHFingerprint{Hash: "abc123", ClientID: "SSH-2.0-test", Raw: "a;b;c;d"}
-	entry, err := daemonStore.Observe(fp, "203.0.113.10", false)
-	if err != nil {
-		t.Fatalf("Observe initial: %v", err)
+	fp := testFingerprint()
+	if _, err := st.Observe(store.Observation{
+		Fingerprint: fp.Hash,
+		IP:          "192.0.2.10",
+		Meta:        fp.toMeta(),
+	}, false); err != nil {
+		t.Fatalf("Observe: %v", err)
 	}
-	if entry.Status != StatusPending {
-		t.Fatalf("initial status = %q, want %q", entry.Status, StatusPending)
-	}
+	st.Close()
 
-	cliStore, err := NewStore(path)
+	// Re-open so values come back off disk as JSON rather than out of the
+	// in-process map — in particular first_kex_guess as a real bool.
+	reopened, err := NewStore(path)
 	if err != nil {
-		t.Fatalf("NewStore cli: %v", err)
+		t.Fatalf("reopen: %v", err)
 	}
-	if err := cliStore.SetStatus("abc123", StatusApproved, "laptop"); err != nil {
-		t.Fatalf("SetStatus: %v", err)
-	}
+	defer reopened.Close()
 
-	entry, err = daemonStore.Observe(fp, "203.0.113.10", false)
+	entry, err := reopened.Get(fp.Hash)
 	if err != nil {
-		t.Fatalf("Observe after approval: %v", err)
+		t.Fatalf("Get: %v", err)
 	}
-	if entry.Status != StatusApproved {
-		t.Fatalf("status after external approval = %q, want %q", entry.Status, StatusApproved)
+	if got := sshMetaOf(entry); !reflect.DeepEqual(got, fp) {
+		t.Errorf("round trip mismatch:\n got %+v\nwant %+v", got, fp)
 	}
 }
 
-func TestStorePruneToLimitPreservesApproved(t *testing.T) {
-	store, err := NewStore(filepath.Join(t.TempDir(), "sshgate.db"))
-	if err != nil {
-		t.Fatalf("NewStore() error = %v", err)
-	}
-	for _, fp := range []SSHFingerprint{
-		{Hash: "old-pending", ClientID: "SSH-2.0-test", Raw: "a;b;c;d"},
-		{Hash: "approved", ClientID: "SSH-2.0-test", Raw: "a;b;c;d"},
-		{Hash: "new-pending", ClientID: "SSH-2.0-test", Raw: "a;b;c;d"},
-	} {
-		if _, err := store.Observe(fp, "203.0.113.10", false); err != nil {
-			t.Fatalf("Observe(%s): %v", fp.Hash, err)
-		}
-	}
-	if err := store.SetStatus("approved", StatusApproved, "laptop"); err != nil {
-		t.Fatalf("SetStatus approved: %v", err)
-	}
-
-	n, err := store.PruneToLimit(2)
-	if err != nil {
-		t.Fatalf("PruneToLimit: %v", err)
-	}
-	if n != 1 {
-		t.Fatalf("pruned = %d, want 1", n)
-	}
-	entries, err := store.List()
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if _, ok := entries["approved"]; !ok {
-		t.Fatal("approved fingerprint was pruned")
-	}
-	if len(entries) != 2 {
-		t.Fatalf("entries = %v, want 2", entries)
+func TestSSHMetaOfEmptyEntry(t *testing.T) {
+	// A placeholder row written by --register or a gatehub decision has no
+	// metadata; it must render as a zero fingerprint rather than panic.
+	got := sshMetaOf(Entry{Fingerprint: "abc"})
+	if got.Hash != "abc" || got.ClientID != "" || got.FirstKexGuess {
+		t.Errorf("sshMetaOf(empty) = %+v", got)
 	}
 }
 
-func TestStoreResolveFingerprint(t *testing.T) {
-	store, err := NewStore(filepath.Join(t.TempDir(), "sshgate.db"))
+// A database written by the pre-gatekit sshgate must keep its verdicts and
+// still surface its SSH fields through the adapter. This is the migration
+// that runs against the databases in service.
+func TestOpensPreGatekitDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
-		t.Fatalf("NewStore() error = %v", err)
+		t.Fatalf("open: %v", err)
 	}
-	for _, hash := range []string{"abcd1111", "abcd2222", "ef009999"} {
-		fp := SSHFingerprint{Hash: hash, ClientID: "SSH-2.0-test", Raw: "a;b;c;d"}
-		if _, err := store.Observe(fp, "203.0.113.10", false); err != nil {
-			t.Fatalf("Observe(%s): %v", hash, err)
-		}
+	if _, err := db.Exec(`
+		CREATE TABLE fingerprints (
+			fp TEXT PRIMARY KEY,
+			status TEXT NOT NULL,
+			label TEXT NOT NULL DEFAULT '',
+			first_seen TEXT NOT NULL,
+			last_seen TEXT NOT NULL,
+			client_id TEXT NOT NULL DEFAULT '',
+			raw TEXT NOT NULL DEFAULT '',
+			kex TEXT NOT NULL DEFAULT '',
+			host_key TEXT NOT NULL DEFAULT '',
+			cipher_c2s TEXT NOT NULL DEFAULT '',
+			cipher_s2c TEXT NOT NULL DEFAULT '',
+			mac_c2s TEXT NOT NULL DEFAULT '',
+			mac_s2c TEXT NOT NULL DEFAULT '',
+			compress_c2s TEXT NOT NULL DEFAULT '',
+			compress_s2c TEXT NOT NULL DEFAULT '',
+			first_kex_guess INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE TABLE fingerprint_ips (
+			fp TEXT NOT NULL REFERENCES fingerprints(fp) ON DELETE CASCADE,
+			ip TEXT NOT NULL, PRIMARY KEY (fp, ip)
+		);
+		INSERT INTO fingerprints VALUES ('fp1','approved','michael-laptop',
+			'2026-01-01T00:00:00Z','2026-02-01T00:00:00Z',
+			'SSH-2.0-OpenSSH_9.6','rawblob','curve25519-sha256','ssh-ed25519',
+			'chacha20-poly1305@openssh.com','aes256-gcm@openssh.com',
+			'hmac-sha2-256','hmac-sha2-512','none','none',1);
+		INSERT INTO fingerprint_ips VALUES ('fp1','192.0.2.10');
+	`); err != nil {
+		t.Fatalf("seed legacy schema: %v", err)
+	}
+	db.Close()
+
+	st, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore on legacy db: %v", err)
+	}
+	defer st.Close()
+
+	entry, err := st.Get("fp1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if entry.Status != StatusApproved || entry.Label != "michael-laptop" {
+		t.Errorf("verdict lost: status=%q label=%q", entry.Status, entry.Label)
+	}
+	if len(entry.IPs) != 1 || entry.IPs[0] != "192.0.2.10" {
+		t.Errorf("ips = %v", entry.IPs)
+	}
+	fp := sshMetaOf(entry)
+	if fp.ClientID != "SSH-2.0-OpenSSH_9.6" || fp.Kex != "curve25519-sha256" {
+		t.Errorf("ssh metadata = %+v", fp)
+	}
+	// The 0/1 integer column has to come back as a real bool, not a string.
+	if !fp.FirstKexGuess {
+		t.Errorf("first_kex_guess = %v, want true", fp.FirstKexGuess)
 	}
 
-	if got, err := store.ResolveFingerprint("ef009999"); err != nil || got != "ef009999" {
-		t.Fatalf("exact: got %q err %v", got, err)
-	}
-	if got, err := store.ResolveFingerprint("ef"); err != nil || got != "ef009999" {
-		t.Fatalf("unique prefix: got %q err %v", got, err)
-	}
-	if _, err := store.ResolveFingerprint("abcd"); err == nil {
-		t.Fatal("ambiguous prefix should error")
-	}
-	if _, err := store.ResolveFingerprint("zz"); err == nil {
-		t.Fatal("missing prefix should error")
-	}
-}
-
-func TestStoreObserveBlocksUnknownWhenConfigured(t *testing.T) {
-	store, err := NewStore(filepath.Join(t.TempDir(), "sshgate.db"))
-	if err != nil {
-		t.Fatalf("NewStore() error = %v", err)
-	}
-	fp := SSHFingerprint{Hash: "abc123", ClientID: "SSH-2.0-test", Raw: "a;b;c;d"}
-	entry, err := store.Observe(fp, "203.0.113.10", true)
-	if err != nil {
-		t.Fatalf("Observe() error = %v", err)
-	}
-	if entry.Status != StatusBlocked {
-		t.Fatalf("status = %q, want %q", entry.Status, StatusBlocked)
+	// A client that has never been seen must still be recordable against the
+	// migrated schema — the legacy columns are NOT NULL, so this is where a
+	// missing default would take the gate down on the first new connection.
+	if _, err := st.Observe(store.Observation{
+		Fingerprint: "brandnew",
+		IP:          "192.0.2.99",
+		Meta:        testFingerprint().toMeta(),
+	}, false); err != nil {
+		t.Fatalf("Observe new fingerprint on migrated db: %v", err)
 	}
 }
