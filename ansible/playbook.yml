@@ -40,14 +40,32 @@
         immediate: true
         state: enabled
 
+    # Describe the checkout so a deployed host reports what it is actually
+    # running. Without this the binary keeps main.version's "dev" default, and
+    # `sshgate version` on a host tells you nothing about which build it has.
+    - name: Describe the checkout for the version stamp
+      ansible.builtin.command:
+        cmd: git describe --tags --always --dirty
+        chdir: "{{ playbook_dir }}/.."
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: sshgate_git_describe
+      failed_when: false
+
     - name: Build sshgate locally
       ansible.builtin.command:
-        cmd: go build -trimpath -o {{ sshgate_build_output | quote }} .
+        cmd: >-
+          go build -trimpath
+          -ldflags "-s -w -X main.version={{ sshgate_version }}"
+          -o {{ sshgate_build_output | quote }} .
         chdir: "{{ playbook_dir }}/.."
       environment:
         CGO_ENABLED: "0"
         GOOS: "{{ sshgate_goos }}"
         GOARCH: "{{ sshgate_goarch }}"
+      vars:
+        sshgate_version: "{{ sshgate_git_describe.stdout | default('dev', true) | trim }}"
       delegate_to: localhost
       become: false
       changed_when: true
@@ -169,18 +187,21 @@
       ansible.builtin.systemd:
         daemon_reload: true
 
-    # NOTE: forced to a hard `restart` (not reload-or-restart) for the initial
-    # rollout of tableflip-based graceful reload. Any host still running a
-    # pre-tableflip binary doesn't handle SIGHUP by re-execing — it just dies,
-    # and systemd treats SIGHUP as a clean stop by default (implicit
-    # SuccessExitStatus), so Restart=on-failure never re-launches it. Once the
-    # whole fleet is confirmed running a tableflip-capable binary, switch this
-    # back to `systemctl reload-or-restart sshgate` to restore zero-downtime
-    # upgrades. Fire-and-forget so a slow restart cannot hang the play if the
-    # control connection blips.
+    # reload-or-restart performs a graceful upgrade when sshgate is already
+    # running: systemctl runs ExecReload (SIGHUP), tableflip re-execs the new
+    # binary and hands off the listening sockets, and existing SSH sessions —
+    # including Ansible's own connection when it runs through sshgate — survive.
+    # It falls back to a start/restart when the service is not yet running (e.g.
+    # first deploy). Fire-and-forget so a rare non-graceful restart cannot hang
+    # the play if the control connection blips.
+    #
+    # This was temporarily forced to a hard `restart` while the fleet still had
+    # pre-tableflip binaries, which treat SIGHUP as a clean stop and never come
+    # back. Every host in the inventory was confirmed tableflip-capable during
+    # the gatekit rollout, so the graceful path is safe again.
     - name: Restart sshgate
       ansible.builtin.command:
-        cmd: systemctl restart sshgate
+        cmd: systemctl reload-or-restart sshgate
       changed_when: true
       async: 45
       poll: 0
