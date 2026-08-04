@@ -21,6 +21,25 @@
     sshgate_build_output: "{{ playbook_dir }}/../sshgate-{{ sshgate_goos }}-{{ sshgate_goarch }}"
 
   tasks:
+    - name: Install firewalld
+      ansible.builtin.package:
+        name: firewalld
+        state: present
+
+    - name: Enable and start firewalld
+      ansible.builtin.systemd:
+        name: firewalld
+        enabled: true
+        state: started
+
+    - name: Allow sshgate through firewalld
+      ansible.posix.firewalld:
+        zone: public
+        port: "{{ sshgate_source_port }}/tcp"
+        permanent: true
+        immediate: true
+        state: enabled
+
     - name: Build sshgate locally
       ansible.builtin.command:
         cmd: go build -trimpath -o {{ sshgate_build_output | quote }} .
@@ -71,6 +90,26 @@
         group: root
         mode: "0755"
       notify: Restart sshgate
+
+    - name: Check for existing sshgate config
+      ansible.builtin.stat:
+        path: "{{ sshgate_config }}"
+      register: sshgate_existing_config_file
+
+    - name: Read existing sshgate config
+      ansible.builtin.slurp:
+        src: "{{ sshgate_config }}"
+      register: sshgate_existing_config
+      when: sshgate_existing_config_file.stat.exists
+      no_log: true
+
+    - name: Preserve existing sshgate control-plane configuration
+      ansible.builtin.set_fact:
+        sshgate_effective_control_plane: >-
+          {{ ((sshgate_existing_config.content | b64decode | from_json).control_plane)
+             if (sshgate_control_plane is not defined and sshgate_existing_config_file.stat.exists)
+             else (sshgate_control_plane | default({})) }}
+      no_log: true
 
     - name: Install sshgate config
       ansible.builtin.template:
@@ -130,16 +169,18 @@
       ansible.builtin.systemd:
         daemon_reload: true
 
-    # reload-or-restart performs a graceful upgrade when sshgate is already
-    # running: systemctl runs ExecReload (SIGHUP), tableflip re-execs the new
-    # binary and hands off the listening sockets, and existing SSH sessions —
-    # including Ansible's own connection when it runs through sshgate — survive.
-    # It falls back to a start/restart when the service is not yet running (e.g.
-    # first deploy). Fire-and-forget so a rare non-graceful restart cannot hang
-    # the play if the control connection blips.
+    # NOTE: forced to a hard `restart` (not reload-or-restart) for the initial
+    # rollout of tableflip-based graceful reload. Any host still running a
+    # pre-tableflip binary doesn't handle SIGHUP by re-execing — it just dies,
+    # and systemd treats SIGHUP as a clean stop by default (implicit
+    # SuccessExitStatus), so Restart=on-failure never re-launches it. Once the
+    # whole fleet is confirmed running a tableflip-capable binary, switch this
+    # back to `systemctl reload-or-restart sshgate` to restore zero-downtime
+    # upgrades. Fire-and-forget so a slow restart cannot hang the play if the
+    # control connection blips.
     - name: Restart sshgate
       ansible.builtin.command:
-        cmd: systemctl reload-or-restart sshgate
+        cmd: systemctl restart sshgate
       changed_when: true
       async: 45
       poll: 0

@@ -1,4 +1,4 @@
 {
   "max_fingerprints": {{ sshgate_max_fingerprints | int }},
-  "control_plane": {{ sshgate_control_plane | default({}) | to_nice_json }}
+  "control_plane": {{ sshgate_effective_control_plane | to_nice_json }}
 }
