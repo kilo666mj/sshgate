@@ -133,6 +133,9 @@ func (s *controlPlaneSyncer) pushObservations() error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("POST observations returned %s (instance %q not registered with gatehub?)", resp.Status, s.cfg.InstanceID)
+	}
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("POST observations returned %s", resp.Status)
 	}
@@ -154,6 +157,9 @@ func (s *controlPlaneSyncer) pullPolicy() error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("GET policy returned %s (instance %q not registered with gatehub?)", resp.Status, s.cfg.InstanceID)
+	}
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("GET policy returned %s", resp.Status)
 	}
