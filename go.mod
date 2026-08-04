@@ -4,6 +4,7 @@ go 1.26.5
 
 require (
 	github.com/cloudflare/tableflip v1.2.3
+	github.com/kilo666mj/gatekit v0.2.0
 	modernc.org/sqlite v1.56.0
 )
 

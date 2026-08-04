@@ -31,15 +31,15 @@ func cmdCorrelate(args []string) {
 		fatalf("usage: correlate [--log <path>] [--window <duration>] <fingerprint>")
 	}
 
-	store, err := NewStore(*dbPath)
+	st, err := NewStore(*dbPath)
 	if err != nil {
 		fatalf("open store: %v", err)
 	}
-	fp, err := store.ResolveFingerprint(fs.Arg(0))
+	fp, err := st.ResolveFingerprint(fs.Arg(0))
 	if err != nil {
 		fatalf("%v", err)
 	}
-	entry, err := store.get(fp)
+	entry, err := st.Get(fp)
 	if err != nil {
 		fatalf("load fingerprint: %v", err)
 	}
