@@ -8,3 +8,9 @@ sshgate.db-*
 # Real ansible inventory holds host names; commit inventory.example instead.
 ansible/inventory
 ansible/host_vars/
+
+# Stray npm output. Nothing here is a Node project; an npm install run in the
+# wrong directory once left 5 MB of node_modules next to the Jinja templates.
+node_modules/
+package.json
+package-lock.json
