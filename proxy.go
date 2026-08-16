@@ -5,23 +5,17 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"fmt"
 	"log"
 	"net"
-	"os"
-	"os/signal"
-	"strings"
 	"sync"
-	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/kilo666mj/gatekit/controlplane"
+	"github.com/kilo666mj/gatekit/lifecycle"
+	gateproxy "github.com/kilo666mj/gatekit/proxy"
 	"github.com/kilo666mj/gatekit/ratelimit"
-	"github.com/kilo666mj/gatekit/semaphore"
+	"github.com/kilo666mj/gatekit/sdnotify"
 	"github.com/kilo666mj/gatekit/store"
-
-	"github.com/cloudflare/tableflip"
 )
 
 const (
@@ -46,37 +40,13 @@ const (
 	defaultDrainTimeout = time.Hour
 )
 
-type routeFlag []Route
-
-type Route struct {
-	Listen  string
-	Backend string
-}
-
-func (r *routeFlag) String() string {
-	var parts []string
-	for _, route := range *r {
-		parts = append(parts, route.Listen+"="+route.Backend)
-	}
-	return strings.Join(parts, ",")
-}
-
-func (r *routeFlag) Set(value string) error {
-	listen, backend, ok := strings.Cut(value, "=")
-	if !ok || listen == "" || backend == "" {
-		return fmt.Errorf("route must be LISTEN=BACKEND")
-	}
-	*r = append(*r, Route{Listen: listen, Backend: backend})
-	return nil
-}
-
 func cmdServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	dbPath := fs.String("db", defaultDB, "database path")
 	configPath := fs.String("config", defaultConfig, "config path")
 	allowUnknown := fs.Bool("allow-unknown", false, "allow pending fingerprints")
 	drainTimeout := fs.Duration("drain-timeout", defaultDrainTimeout, "on upgrade/shutdown, how long to wait for existing connections to finish (0 = forever)")
-	var routes routeFlag
+	var routes gateproxy.Routes
 	fs.Var(&routes, "route", "route in LISTEN=BACKEND form, repeatable")
 	fs.Parse(args)
 	if len(routes) == 0 {
@@ -87,33 +57,11 @@ func cmdServe(args []string) {
 	// (possibly newly installed) binary, passes it the listening sockets over an
 	// inherited control fd, and lets this process keep serving its existing
 	// connections until they drain.
-	upg, err := tableflip.New(tableflip.Options{})
+	process, err := lifecycle.New(log.Printf)
 	if err != nil {
-		fatalf("tableflip init: %v", err)
+		fatalf("process lifecycle: %v", err)
 	}
-	defer upg.Stop()
-
-	// terminating distinguishes a stop (SIGTERM/SIGINT) from an upgrade handoff
-	// once upg.Exit() unblocks, so each can pick the right drain deadline.
-	var terminating atomic.Bool
-	go func() {
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT)
-		for s := range sig {
-			if s == syscall.SIGHUP {
-				log.Printf("SIGHUP: starting upgrade")
-				if err := upg.Upgrade(); err != nil {
-					log.Printf("upgrade failed: %v", err)
-				}
-				continue
-			}
-			// SIGTERM/SIGINT: begin graceful shutdown by unblocking Exit below.
-			log.Printf("%s: shutting down", s)
-			terminating.Store(true)
-			upg.Stop()
-			return
-		}
-	}()
+	defer process.Close()
 
 	log.Printf("sshgate version: %s", version)
 	log.Printf("database: %s", *dbPath)
@@ -163,30 +111,31 @@ func cmdServe(args []string) {
 
 	limiter := ratelimit.New(connRatePerIP, connBurstPerIP, rateLimitTTL)
 	go limiter.RunSweeper(rateSweepPeriod, bgCtx.Done())
-	sem := semaphore.New(maxConcurrentConns)
 
-	// connWG tracks in-flight connections so the drain phase can wait for them.
-	var connWG sync.WaitGroup
+	proxyServer := gateproxy.NewServer(maxConcurrentConns, log.Printf)
 	var listeners []net.Listener
 	for _, route := range routes {
-		route := route
-		ln, err := upg.Listen("tcp", route.Listen)
+		ln, err := process.Listen("tcp", route.Listen)
 		if err != nil {
 			fatalf("listen %s: %v", route.Listen, err)
 		}
 		listeners = append(listeners, ln)
 		log.Printf("LISTEN %s -> %s", route.Listen, route.Backend)
-		go serveListener(ln, route, st, *allowUnknown, limiter, sem, &connWG)
+		proxyServer.Serve(ln, route, func(conn net.Conn, route gateproxy.Route) {
+			handleConn(conn, route, st, *allowUnknown, limiter)
+		})
 	}
 
-	if err := upg.Ready(); err != nil {
+	if err := process.Ready(); err != nil {
 		fatalf("tableflip ready: %v", err)
 	}
-	notifyReady()
+	if err := sdnotify.Ready(); err != nil {
+		log.Printf("sd_notify: %v", err)
+	}
 
 	// Block until this process is asked to exit: either a successful upgrade
 	// handed serving off to a new process, or a termination signal arrived.
-	<-upg.Exit()
+	process.Wait()
 
 	// Stop accepting new connections and stop background DB writers. Existing
 	// proxied streams keep running on their own goroutines.
@@ -199,70 +148,25 @@ func cmdServe(args []string) {
 	// upgrade handoff waits up to --drain-timeout so live SSH sessions survive
 	// the binary swap.
 	timeout := *drainTimeout
-	if terminating.Load() {
+	if process.Terminating() {
 		timeout = shutdownGrace
 		log.Printf("shutdown: draining in-flight connections (grace %s)", timeout)
 	} else {
 		log.Printf("upgrade: draining in-flight connections (timeout %s)", timeout)
 	}
-	drainConnections(&connWG, timeout)
+	if proxyServer.Drain(timeout) {
+		log.Printf("all connections drained")
+	} else {
+		log.Printf("drain timeout after %s; exiting with connections still open", timeout)
+	}
 	if err := st.Close(); err != nil {
 		log.Printf("shutdown: close store: %v", err)
 	}
 }
 
-// drainConnections waits for in-flight connections to finish, bounded by
-// timeout (0 waits indefinitely). It lets a process that has handed off keep
-// serving live SSH sessions instead of dropping them on restart.
-func drainConnections(connWG *sync.WaitGroup, timeout time.Duration) {
-	done := make(chan struct{})
-	go func() {
-		connWG.Wait()
-		close(done)
-	}()
-	if timeout <= 0 {
-		<-done
-		log.Printf("all connections drained")
-		return
-	}
-	select {
-	case <-done:
-		log.Printf("all connections drained")
-	case <-time.After(timeout):
-		log.Printf("drain timeout after %s; exiting with connections still open", timeout)
-	}
-}
-
-func serveListener(ln net.Listener, route Route, st *store.Store, allowUnknown bool, limiter *ratelimit.Limiter, sem *semaphore.Semaphore, connWG *sync.WaitGroup) {
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			// The listener is closed during drain; stop the accept loop so the
-			// process can exit once its existing connections finish.
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-			log.Printf("ACCEPT %s: %v", route.Listen, err)
-			continue
-		}
-		clientIP := remoteIP(conn.RemoteAddr())
-		if !sem.Acquire() {
-			log.Printf("[%s] OVERLOAD dropping connection", clientIP)
-			conn.Close()
-			continue
-		}
-		connWG.Add(1)
-		go func() {
-			defer connWG.Done()
-			defer sem.Release()
-			handleConn(conn, route, st, allowUnknown, limiter)
-		}()
-	}
-}
-
-func handleConn(client net.Conn, route Route, st *store.Store, allowUnknown bool, limiter *ratelimit.Limiter) {
+func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUnknown bool, limiter *ratelimit.Limiter) {
 	defer client.Close()
-	clientIP := remoteIP(client.RemoteAddr())
+	clientIP := gateproxy.RemoteIP(client.RemoteAddr())
 	if !limiter.Allow(clientIP) {
 		log.Printf("[%s] RATELIMIT dropping connection", clientIP)
 		return
@@ -397,14 +301,6 @@ func proxyCopy(wg *sync.WaitGroup, dst net.Conn, src *bufio.Reader, srcConn net.
 			return
 		}
 	}
-}
-
-func remoteIP(addr net.Addr) string {
-	host, _, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		return addr.String()
-	}
-	return host
 }
 
 // isTimeout reports whether err is a network read-deadline timeout, as opposed
