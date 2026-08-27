@@ -26,57 +26,67 @@ SSH client fingerprints are spoofable. **This is not authentication.**
 unexpected client stacks. The real `sshd` must still perform user and key
 authentication, and its normal hardening must remain in place.
 
+Fingerprints describe an SSH client's advertised implementation and algorithm
+set, not a unique device or user. Multiple machines may produce the same value.
 Blocked and pending clients may receive the SSH banner, but they do not complete
 key exchange with the backend.
 
-## Quick start
+## Safe quick start
 
-Build and test with Go 1.26.3 or newer:
+Build and test with Go 1.26.5 or newer:
 
 ```sh
 go build -o sshgate .
 go test ./...
 ```
 
-Move the real SSH server to an internal-only port, then run `sshgate` on the
-public port:
+Keep `sshd` unchanged on port 22 and initially run `sshgate` on a second port:
+
+```text
+SSH client ──> sshgate :2222 ──> sshd 127.0.0.1:22
+                    │
+                    └──> SQLite fingerprint decisions
+```
 
 ```sh
 ./sshgate serve \
-  --route [::]:22=127.0.0.1:2222 \
+  --allow-unknown \
+  --route '[::]:2222=127.0.0.1:22' \
   --db ./sshgate.db \
   --config ./config.json
 ```
 
-Unknown fingerprints are blocked by default. During enrollment, add
-`--allow-unknown` so new fingerprints are recorded as pending while still
-being forwarded. Review and approve known clients, then remove the flag:
+The config file is optional. From a second terminal, connect through port 2222,
+inspect the new observation, and approve it:
 
 ```sh
+ssh -p 2222 user@server.example.com
 ./sshgate list -v --db ./sshgate.db
-./sshgate approve --db ./sshgate.db --label "Alice laptop" <fingerprint>
+./sshgate approve --db ./sshgate.db \
+  --label "OpenSSH on my laptop" <fingerprint>
 ```
 
-## Configuration
+Restart without `--allow-unknown`, then verify the approved client can still
+connect through port 2222. Keep an existing SSH session open while changing
+firewall rules or moving `sshd` to an internal-only backend port.
 
-The optional JSON configuration controls store limits and Gatehub
-synchronization:
+For production, unknown fingerprints are blocked by default:
 
-```json
-{
-  "max_fingerprints": 100000,
-  "control_plane": {
-    "url": "https://gatehub.example.com",
-    "instance_id": "public-ssh",
-    "token": "replace-with-node-token",
-    "sync_interval": "30s"
-  }
-}
+```sh
+./sshgate serve \
+  --route '[::]:22=127.0.0.1:2222' \
+  --db ./sshgate.db \
+  --config ./config.json
 ```
 
-The default database is `/var/lib/sshgate/sshgate.db`; the default
-configuration is `/etc/sshgate/config.json`. Gatehub also supports mTLS node
-authentication in place of a bearer token.
+Validate the same inputs without opening the database or binding a port:
+
+```sh
+./sshgate doctor \
+  --db ./sshgate.db \
+  --config ./config.json \
+  --route '[::]:2222=127.0.0.1:22'
+```
 
 ## Deployment
 
@@ -85,20 +95,26 @@ configuration, systemd unit, and hardened writable paths:
 
 ```sh
 cd ansible
+cp inventory.example inventory
+cp group_vars/sshgate.yml.example group_vars/sshgate.yml
+# Edit inventory and group_vars/sshgate.yml for your deployment.
+ansible-galaxy collection install ansible.posix
 ansible-playbook --syntax-check playbook.yml
 ansible-playbook playbook.yml
 ```
 
+The real inventory and group variables files are ignored so host names,
+fingerprints, and deployment-specific settings are not committed accidentally.
 Because `sshgate` is inline with live SSH sessions, deployments use a graceful
 tableflip handoff instead of terminating established connections.
 
-See [deployment and graceful upgrades](docs/deployment.md) for inventory
-variables, fingerprint seeding, and reload behavior.
+See [deployment and graceful upgrades](docs/deployment.md) for binaries,
+containers, inventory variables, fingerprint seeding, and reload behavior.
 
 ## Documentation
 
 - [Deployment and graceful upgrades](docs/deployment.md)
-- [Operations and fingerprint reference](docs/operations.md)
+- [Operations, configuration, troubleshooting, and fingerprint reference](docs/operations.md)
 - [Gatehub control plane](https://github.com/kilo666mj/gatehub)
 
 ## License
