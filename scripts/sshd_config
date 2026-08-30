@@ -1,3 +1,6 @@
+# Site-specific example only. Do not install this file unchanged: it replaces
+# the host's complete sshd configuration and its algorithms may not suit your
+# OpenSSH version or access requirements.
 Port 22
 Protocol 2
 
