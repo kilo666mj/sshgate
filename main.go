@@ -49,6 +49,8 @@ func main() {
 		cmdDelete(os.Args[2:])
 	case "correlate":
 		cmdCorrelate(os.Args[2:])
+	case "doctor":
+		cmdDoctor(os.Args[2:])
 	case "version", "-version", "--version":
 		fmt.Println(version)
 	default:
@@ -69,6 +71,7 @@ commands:
   label       label a fingerprint
   delete      delete a fingerprint
   correlate   correlate a fingerprint with sshd logs
+  doctor      validate and summarize startup settings
   version     print the build version
 `)
 }

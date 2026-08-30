@@ -56,6 +56,34 @@ Put flags before the fingerprint argument.
 }
 ```
 
+Configuration fields:
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `max_fingerprints` | No | Stored-entry cap. `0` uses 100000; `-1` is unlimited. |
+| `control_plane.url` | Enables sync | Gatehub base URL. Omitting it disables sync. |
+| `control_plane.instance_id` | With URL | Stable name for this SSHGate instance. |
+| `control_plane.token` | One auth method | Bearer token used to authenticate to Gatehub. |
+| `control_plane.client_cert` | For mTLS | Client certificate path. |
+| `control_plane.client_key` | For mTLS | Client private-key path. |
+| `control_plane.ca` | For mTLS | CA bundle used to verify Gatehub. |
+| `control_plane.server_name` | No | TLS name override when URL host and certificate differ. |
+| `control_plane.sync_interval` | No | Go duration such as `30s`; defaults to 30 seconds. |
+
+Bearer authentication requires `token`. mTLS instead requires all three of
+`client_cert`, `client_key`, and `ca`. Do not commit tokens or private keys.
+
+Use `doctor` to validate and summarize startup inputs without opening the
+database, connecting to the backend, or binding a port:
+
+```bash
+sshgate doctor \
+  --db ./sshgate.db \
+  --config ./config.json \
+  --route '[::]:2222=127.0.0.1:22' \
+  --allow-unknown
+```
+
 `max_fingerprints` caps stored fingerprint entries. `0` (the default when unset)
 applies a built-in cap of 100000, which bounds disk growth from randomized
 KEXINIT material; set `-1` for unlimited storage. When the store exceeds the
@@ -80,6 +108,22 @@ sshgate correlate --db ./sshgate.db --log /var/log/auth.log <fingerprint>
 
 Use `--log /var/log/secure` on distributions that write SSH authentication
 events there. Use `--window 5m` to widen the matching window.
+
+## Troubleshooting
+
+- **Permission denied opening the database:** the service user needs write
+  access to the database directory, not only the database file.
+- **`BACKEND ... connection refused`:** verify `sshd` is listening on the
+  backend address and port from `--route`.
+- **A client sees the banner but cannot log in:** unknown, pending, and blocked
+  clients stop before key exchange. Check `sshgate list`; use
+  `--allow-unknown` only during deliberate enrollment.
+- **An approved client changes fingerprint:** SSH client upgrades and algorithm
+  policy changes can alter KEXINIT. Inspect `sshgate list -v` before approval.
+- **The service is unreachable:** check its listener and firewall, then inspect
+  `journalctl -u sshgate`.
+- **Ansible cannot find `ansible.posix.firewalld`:** run
+  `ansible-galaxy collection install ansible.posix`.
 
 
 ## Flood Limits
@@ -112,4 +156,3 @@ kex_algorithms;server_host_key_algorithms;encryption_algorithms_client_to_server
 
 Because those values are client-controlled, a determined client can spoof them.
 Treat this as a policy and logging signal, not an identity proof.
-

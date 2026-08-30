@@ -2,6 +2,29 @@
 
 Ansible deployment, configuration, fingerprint seeding, and zero-downtime process upgrades.
 
+## Installation
+
+Download static Linux binaries from the
+[GitHub releases page](https://github.com/kilo666mj/sshgate/releases), build
+from source with Go 1.26.5 or newer, or use the container image published at
+`ghcr.io/kilo666mj/sshgate`.
+
+The container runs as UID 65532. A safe first run keeps the host's `sshd` on
+port 22 and exposes SSHGate on port 2222:
+
+```bash
+mkdir -p sshgate-data
+sudo chown 65532:65532 sshgate-data
+docker run --rm --network host \
+  -v "$PWD/sshgate-data:/var/lib/sshgate" \
+  ghcr.io/kilo666mj/sshgate:latest \
+  serve --allow-unknown --route '[::]:2222=127.0.0.1:22'
+```
+
+Host networking lets the container reach an `sshd` bound to the host's
+loopback interface. With ordinary container networking, `127.0.0.1` means the
+container itself.
+
 ## Ansible Deployment
 
 The repo includes an Ansible playbook that builds `sshgate` locally, installs it
@@ -10,12 +33,17 @@ systemd service:
 
 ```bash
 cd ansible
+cp inventory.example inventory
+cp group_vars/sshgate.yml.example group_vars/sshgate.yml
+# Edit inventory and group_vars/sshgate.yml for your deployment.
+ansible-galaxy collection install ansible.posix
 ansible-playbook --syntax-check playbook.yml
 ansible-playbook playbook.yml
 ```
 
-Edit `ansible/inventory` for the target host. Override these variables in the
-inventory or with `-e` as needed:
+The real inventory and group variables files are ignored so deployment-specific
+host names, fingerprints, and settings are not committed accidentally. Override
+variables in `group_vars/sshgate.yml`, the inventory, or with `-e` as needed:
 
 ```yaml
 sshgate_binary: /usr/local/bin/sshgate
@@ -95,3 +123,11 @@ Note that fingerprint approve/block changes never require a restart at all: each
 new connection reads its verdict from the database live. Only binary upgrades and
 `--route`/config changes need the process to reload.
 
+## Site-specific migration scripts
+
+The scripts under `scripts/` migrate the original author's randomized-port SSH
+setup. They are examples, not the general installation path. They contain
+firewall, service, `sshd`, and path assumptions; review them and use `--dry-run`
+first. A migration refuses to proceed unless at least one
+`--approve 'HASH|LABEL'` is supplied or enrollment is explicitly enabled with
+`--allow-unknown`. Always keep a recovery SSH session open.

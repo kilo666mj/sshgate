@@ -19,12 +19,9 @@ SSHD_CONFIG_SRC=""
 SSHD_BIN=""
 RANDOMIZER_PATH=/root/code/ssh_port/ssh_server_port_randomizer.sh
 DRY_RUN=0
+ALLOW_UNKNOWN=0
 
-APPROVED_FINGERPRINTS=(
-	"aaf62b02afeaa8df0687aa49b07825f8|macbook"
-	"da077e892bd3189b77ba40af5a9a807e|debian13-servers"
-	"117974a5daef83386fe315f08177932a|desktop"
-)
+APPROVED_FINGERPRINTS=()
 
 usage() {
 	cat <<EOF
@@ -40,6 +37,8 @@ Options:
   --sshgate-port PORT        External sshgate port. Default: $SSH_PORT
   --sshd-port PORT           Backend sshd port. Default: $SSHD_PORT
   --sshd-listen-address IP   Backend sshd listen address. Default: $SSHD_LISTEN_ADDRESS
+  --approve HASH[|LABEL]     Seed an approved fingerprint. Repeatable.
+  --allow-unknown            Start in enrollment mode. Remove after approval.
   --dry-run                  Print actions without changing the host.
   -h, --help                 Show this help.
 
@@ -77,6 +76,14 @@ while [ "$#" -gt 0 ]; do
 		--sshd-listen-address)
 			SSHD_LISTEN_ADDRESS=${2:?missing address}
 			shift 2
+			;;
+		--approve)
+			APPROVED_FINGERPRINTS+=("${2:?missing fingerprint}")
+			shift 2
+			;;
+		--allow-unknown)
+			ALLOW_UNKNOWN=1
+			shift
 			;;
 		--dry-run)
 			DRY_RUN=1
@@ -158,7 +165,8 @@ resolve_sshd() {
 
 backup_file() {
 	local path=$1
-	local backup="${path}.sshgate-migration.$(date +%Y%m%d%H%M%S)"
+	local backup
+	backup="${path}.sshgate-migration.$(date +%Y%m%d%H%M%S)"
 
 	if [ -e "$path" ]; then
 		run cp -a "$path" "$backup"
@@ -263,6 +271,10 @@ install_sshgate_config() {
 }
 
 install_sshgate_service() {
+	local enrollment_arg=""
+	if [ "$ALLOW_UNKNOWN" -eq 1 ]; then
+		enrollment_arg=" --allow-unknown"
+	fi
 	cat <<EOF | write_file /etc/systemd/system/sshgate.service 0644 root root
 [Unit]
 Description=sshgate SSH fingerprinting proxy
@@ -273,7 +285,7 @@ Wants=network-online.target
 Type=simple
 User=$SSHGATE_USER
 Group=$SSHGATE_GROUP
-ExecStart=$SSHGATE_BINARY serve --db $SSHGATE_DB --config $SSHGATE_CONFIG --route=[::]:$SSH_PORT=$SSHD_LISTEN_ADDRESS:$SSHD_PORT
+ExecStart=$SSHGATE_BINARY serve --db $SSHGATE_DB --config $SSHGATE_CONFIG --route=[::]:$SSH_PORT=$SSHD_LISTEN_ADDRESS:$SSHD_PORT$enrollment_arg
 Restart=on-failure
 RestartSec=2s
 StandardOutput=journal
@@ -309,8 +321,15 @@ seed_approved_fingerprints() {
 
 	for item in "${APPROVED_FINGERPRINTS[@]}"; do
 		fp=${item%%|*}
-		label=${item#*|}
-		run "$SSHGATE_BINARY" approve --db "$SSHGATE_DB" --register --label "$label" "$fp"
+		label=""
+		if [[ "$item" == *"|"* ]]; then
+			label=${item#*|}
+		fi
+		if [ -n "$label" ]; then
+			run "$SSHGATE_BINARY" approve --db "$SSHGATE_DB" --register --label "$label" "$fp"
+		else
+			run "$SSHGATE_BINARY" approve --db "$SSHGATE_DB" --register "$fp"
+		fi
 	done
 	run chown -R "$SSHGATE_USER:$SSHGATE_GROUP" "$SSHGATE_DATA_DIR"
 }
@@ -426,6 +445,10 @@ main() {
 	local old_port
 
 	require_root
+	if [ "${#APPROVED_FINGERPRINTS[@]}" -eq 0 ] && [ "$ALLOW_UNKNOWN" -eq 0 ]; then
+		echo "refusing migration without an approved fingerprint or --allow-unknown" >&2
+		exit 2
+	fi
 	require_command awk
 	require_command crontab
 	require_command firewall-cmd

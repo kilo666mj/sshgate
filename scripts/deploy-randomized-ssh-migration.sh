@@ -6,6 +6,8 @@ REMOTE_DIR="/tmp/sshgate-migration"
 KEEP_REMOTE_FILES=1
 DRY_RUN=0
 TARGET=""
+APPROVED_FINGERPRINTS=()
+ALLOW_UNKNOWN=0
 
 usage() {
 	cat <<EOF
@@ -20,6 +22,8 @@ Options:
                              Default: $RANDOMIZER_PATH
   --remote-dir PATH          Remote staging directory. Default: $REMOTE_DIR
   --keep-remote-files        Leave staged files on the remote host.
+  --approve HASH[|LABEL]     Seed an approved fingerprint. Repeatable.
+  --allow-unknown            Start in enrollment mode. Remove after approval.
   --dry-run                  Pass --dry-run to the remote migration script.
   -h, --help                 Show this help.
 
@@ -40,6 +44,14 @@ while [ "$#" -gt 0 ]; do
 			;;
 		--keep-remote-files)
 			KEEP_REMOTE_FILES=1
+			shift
+			;;
+		--approve)
+			APPROVED_FINGERPRINTS+=("${2:?missing fingerprint}")
+			shift 2
+			;;
+		--allow-unknown)
+			ALLOW_UNKNOWN=1
 			shift
 			;;
 		--dry-run)
@@ -73,7 +85,6 @@ fi
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 MIGRATION_SCRIPT="$ROOT_DIR/scripts/migrate-randomized-ssh-to-sshgate.sh"
-SSHD_CONFIG_SRC="$ROOT_DIR/scripts/sshd_config"
 BUILD_DIR="$ROOT_DIR/.build"
 
 log() {
@@ -114,7 +125,7 @@ remote_has_sudo() {
 }
 
 main() {
-	local arch goarch binary remote_binary remote_script remote_sshd_config remote_dir_q remote_binary_q remote_script_q remote_sshd_config_q randomizer_q cleanup_cmd sudo_prefix dry_run_arg remote_cmd
+	local arch goarch binary remote_binary remote_script remote_dir_q remote_binary_q remote_script_q randomizer_q cleanup_cmd sudo_prefix dry_run_arg remote_cmd item
 
 	require_command go
 	require_command scp
@@ -125,11 +136,6 @@ main() {
 		echo "migration script not found: $MIGRATION_SCRIPT" >&2
 		exit 1
 	fi
-	if [ ! -f "$SSHD_CONFIG_SRC" ]; then
-		echo "sshd_config source not found: $SSHD_CONFIG_SRC" >&2
-		exit 1
-	fi
-
 	log "Detecting target architecture on $TARGET"
 	arch=$(ssh "$TARGET" 'uname -m')
 	goarch=$(map_goarch "$arch")
@@ -145,21 +151,22 @@ main() {
 
 	remote_binary="$REMOTE_DIR/sshgate"
 	remote_script="$REMOTE_DIR/migrate-randomized-ssh-to-sshgate.sh"
-	remote_sshd_config="$REMOTE_DIR/sshd_config"
 	remote_dir_q=$(quote_remote "$REMOTE_DIR")
 	remote_binary_q=$(quote_remote "$remote_binary")
 	remote_script_q=$(quote_remote "$remote_script")
-	remote_sshd_config_q=$(quote_remote "$remote_sshd_config")
 	randomizer_q=$(quote_remote "$RANDOMIZER_PATH")
 
 	log "Creating remote staging directory $REMOTE_DIR"
+	# Values are expanded locally only after quote_remote has shell-quoted them.
+	# shellcheck disable=SC2029
 	ssh "$TARGET" "mkdir -p $remote_dir_q"
 
 	log "Copying sshgate binary and migration script"
 	scp "$binary" "$TARGET:$remote_binary"
 	scp "$MIGRATION_SCRIPT" "$TARGET:$remote_script"
-	scp "$SSHD_CONFIG_SRC" "$TARGET:$remote_sshd_config"
-	ssh "$TARGET" "chmod 0755 $remote_binary_q $remote_script_q && chmod 0644 $remote_sshd_config_q"
+	# Values are expanded locally only after quote_remote has shell-quoted them.
+	# shellcheck disable=SC2029
+	ssh "$TARGET" "chmod 0755 $remote_binary_q $remote_script_q"
 
 	sudo_prefix=""
 	if ! ssh "$TARGET" 'test "$(id -u)" -eq 0'; then
@@ -180,7 +187,14 @@ main() {
 		cleanup_cmd="if [ \"\$status\" -eq 0 ]; then rm -rf $remote_dir_q; fi"
 	fi
 
-	remote_cmd="$sudo_prefix bash $remote_script_q --sshgate-binary-src $remote_binary_q --randomizer-path $randomizer_q --sshd-config-src $remote_sshd_config_q$dry_run_arg; status=\$?; echo; echo 'Migration command exited with status' \$status; echo 'Leaving this SSH session open on the original connection. Test sshgate from another terminal before exiting.'; $cleanup_cmd; exec \${SHELL:-/bin/bash} -l"
+	remote_cmd="$sudo_prefix bash $remote_script_q --sshgate-binary-src $remote_binary_q --randomizer-path $randomizer_q$dry_run_arg"
+	for item in "${APPROVED_FINGERPRINTS[@]}"; do
+		remote_cmd+=" --approve $(quote_remote "$item")"
+	done
+	if [ "$ALLOW_UNKNOWN" -eq 1 ]; then
+		remote_cmd+=" --allow-unknown"
+	fi
+	remote_cmd+="; status=\$?; echo; echo 'Migration command exited with status' \$status; echo 'Leaving this SSH session open on the original connection. Test sshgate from another terminal before exiting.'; $cleanup_cmd; exec \${SHELL:-/bin/bash} -l"
 
 	log "Running migration on $TARGET; this SSH session will remain open afterward"
 	ssh -tt "$TARGET" "$remote_cmd"
