@@ -3,7 +3,7 @@ module sshgate
 go 1.26.5
 
 require (
-	github.com/kilo666mj/gatekit v0.3.0
+	github.com/kilo666mj/gatekit v0.4.0
 	modernc.org/sqlite v1.56.0
 )
 
