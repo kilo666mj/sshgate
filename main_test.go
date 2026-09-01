@@ -25,7 +25,9 @@ func TestSetStatusWithoutLabelKeepsExistingLabel(t *testing.T) {
 	}, false); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
-	st.Close()
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	// approve --label michael-laptop <fp>
 	cmdSetStatus([]string{"--db", path, "--label", "michael-laptop", fp.Hash}, StatusApproved)
@@ -36,7 +38,11 @@ func TestSetStatusWithoutLabelKeepsExistingLabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
 	entry, err := st.Get(fp.Hash)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -60,7 +66,9 @@ func TestSetStatusWithLabelReplacesIt(t *testing.T) {
 	if _, err := st.Observe(store.Observation{Fingerprint: fp.Hash, IP: "192.0.2.10"}, false); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
-	st.Close()
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	cmdSetStatus([]string{"--db", path, "--label", "first", fp.Hash}, StatusApproved)
 	cmdSetStatus([]string{"--db", path, "--label", "second", fp.Hash}, StatusApproved)
@@ -69,7 +77,11 @@ func TestSetStatusWithLabelReplacesIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
 	entry, err := st.Get(fp.Hash)
 	if err != nil {
 		t.Fatalf("Get: %v", err)

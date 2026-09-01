@@ -50,7 +50,9 @@ func TestSSHFingerprintRoundTripsThroughStore(t *testing.T) {
 	}, false); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
-	st.Close()
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
 
 	// Re-open so values come back off disk as JSON rather than out of the
 	// in-process map — in particular first_kex_guess as a real bool.
@@ -58,7 +60,11 @@ func TestSSHFingerprintRoundTripsThroughStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer reopened.Close()
+	defer func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("Close reopened store: %v", err)
+		}
+	}()
 
 	entry, err := reopened.Get(fp.Hash)
 	if err != nil {
@@ -119,13 +125,19 @@ func TestOpensPreGatekitDatabase(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed legacy schema: %v", err)
 	}
-	db.Close()
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
 
 	st, err := NewStore(path)
 	if err != nil {
 		t.Fatalf("NewStore on legacy db: %v", err)
 	}
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
 
 	entry, err := st.Get("fp1")
 	if err != nil {

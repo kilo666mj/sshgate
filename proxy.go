@@ -48,7 +48,9 @@ func cmdServe(args []string) {
 	drainTimeout := fs.Duration("drain-timeout", defaultDrainTimeout, "on upgrade/shutdown, how long to wait for existing connections to finish (0 = forever)")
 	var routes gateproxy.Routes
 	fs.Var(&routes, "route", "route in LISTEN=BACKEND form, repeatable")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		fatalf("parse serve options: %v", err)
+	}
 	if len(routes) == 0 {
 		fatalf("usage: serve --route LISTEN=BACKEND [--route LISTEN=BACKEND]")
 	}
@@ -165,8 +167,8 @@ func cmdServe(args []string) {
 }
 
 func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUnknown bool, limiter *ratelimit.Limiter) {
-	defer client.Close()
 	clientIP := gateproxy.RemoteIP(client.RemoteAddr())
+	defer closeConnection(client, clientIP, "client")
 	if !limiter.Allow(clientIP) {
 		log.Printf("[%s] RATELIMIT dropping connection", clientIP)
 		return
@@ -194,7 +196,7 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 		log.Printf("[%s] BACKEND %s: %v", clientIP, route.Backend, err)
 		return
 	}
-	defer backend.Close()
+	defer closeConnection(backend, clientIP, "backend")
 
 	if _, err := backend.Write(clientID.bytes); err != nil {
 		log.Printf("[%s] BACKEND client identification write: %v", clientIP, err)
@@ -264,6 +266,12 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 	go proxyCopy(&wg, backend, clientReader, client)
 	go proxyCopy(&wg, client, backendReader, backend)
 	wg.Wait()
+}
+
+func closeConnection(conn net.Conn, clientIP, side string) {
+	if err := conn.Close(); err != nil {
+		log.Printf("[%s] close %s connection: %v", clientIP, side, err)
+	}
 }
 
 // closeWriter is implemented by *net.TCPConn; it lets proxyCopy half-close the

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -26,7 +27,9 @@ func cmdCorrelate(args []string) {
 	logPath := fs.String("log", defaultAuthLog, "sshd log path")
 	window := fs.Duration("window", 2*time.Minute, "time window around first/last seen")
 	limit := fs.Int("limit", 100, "maximum matches to print")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		fatalf("parse correlate options: %v", err)
+	}
 	if fs.NArg() != 1 {
 		fatalf("usage: correlate [--log <path>] [--window <duration>] <fingerprint>")
 	}
@@ -64,24 +67,28 @@ func cmdCorrelate(args []string) {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TIME\tIP\tUSER\tLINE")
+	writeOrFatal(w, "TIME\tIP\tUSER\tLINE\n")
 	for _, m := range matches {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+		writeOrFatal(w, "%s\t%s\t%s\t%s\n",
 			m.when.Format("2006-01-02 15:04:05"),
 			m.ip,
 			valueOrDash(sanitizeDisplay(m.user)),
 			sanitizeDisplay(m.line),
 		)
 	}
-	w.Flush()
+	flushOrFatal(w)
 }
 
-func correlateSSHDLog(path string, entry Entry, window time.Duration, limit int) ([]logMatch, error) {
+func correlateSSHDLog(path string, entry Entry, window time.Duration, limit int) (_ []logMatch, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close sshd log: %w", closeErr))
+		}
+	}()
 
 	ips := make([]string, len(entry.IPs))
 	copy(ips, entry.IPs)

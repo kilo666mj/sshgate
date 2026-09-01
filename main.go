@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"sort"
@@ -60,7 +61,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `usage: sshgate <command> [options]
+	writeOrFatal(os.Stderr, `usage: sshgate <command> [options]
 
 commands:
   serve       run the SSH fingerprinting proxy
@@ -84,7 +85,9 @@ func cmdList(args []string) {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	dbPath := fs.String("db", defaultDB, "database path")
 	verbose := fs.Bool("v", false, "include SSH metadata")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		fatalf("parse list options: %v", err)
+	}
 
 	st, err := NewStore(*dbPath)
 	if err != nil {
@@ -103,15 +106,15 @@ func cmdList(args []string) {
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	if *verbose {
-		fmt.Fprintln(w, "FINGERPRINT\tSTATUS\tLABEL\tFIRST_SEEN\tLAST_SEEN\tIPS\tCLIENT\tRAW")
+		writeOrFatal(w, "FINGERPRINT\tSTATUS\tLABEL\tFIRST_SEEN\tLAST_SEEN\tIPS\tCLIENT\tRAW\n")
 	} else {
-		fmt.Fprintln(w, "FINGERPRINT\tSTATUS\tLABEL\tFIRST_SEEN\tLAST_SEEN\tIPS")
+		writeOrFatal(w, "FINGERPRINT\tSTATUS\tLABEL\tFIRST_SEEN\tLAST_SEEN\tIPS\n")
 	}
 	for _, fp := range fps {
 		e := entries[fp]
 		sshfp := sshMetaOf(e)
 		if *verbose {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			writeOrFatal(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				fp, e.Status, valueOrDash(e.Label), formatTime(e.FirstSeen),
 				formatTime(e.LastSeen), joinOrDash(e.IPs),
 				valueOrDash(sanitizeDisplay(sshfp.ClientID)),
@@ -119,12 +122,12 @@ func cmdList(args []string) {
 			)
 			continue
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		writeOrFatal(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			fp, e.Status, valueOrDash(e.Label), formatTime(e.FirstSeen),
 			formatTime(e.LastSeen), joinOrDash(e.IPs),
 		)
 	}
-	w.Flush()
+	flushOrFatal(w)
 }
 
 func cmdSetStatus(args []string, status Status) {
@@ -132,7 +135,9 @@ func cmdSetStatus(args []string, status Status) {
 	dbPath := fs.String("db", defaultDB, "database path")
 	label := fs.String("label", "", "label to assign")
 	register := fs.Bool("register", false, "create the fingerprint if it has not been observed yet (requires a full fingerprint hash)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		fatalf("parse %s options: %v", status, err)
+	}
 	if fs.NArg() != 1 {
 		fatalf("usage: %s [--label <label>] [--register] <fingerprint>", status)
 	}
@@ -190,7 +195,9 @@ func isFingerprintHash(s string) bool {
 func cmdLabel(args []string) {
 	fs := flag.NewFlagSet("label", flag.ExitOnError)
 	dbPath := fs.String("db", defaultDB, "database path")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		fatalf("parse label options: %v", err)
+	}
 	if fs.NArg() != 2 {
 		fatalf("usage: label <fingerprint> <label>")
 	}
@@ -211,7 +218,9 @@ func cmdLabel(args []string) {
 func cmdDelete(args []string) {
 	fs := flag.NewFlagSet("delete", flag.ExitOnError)
 	dbPath := fs.String("db", defaultDB, "database path")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		fatalf("parse delete options: %v", err)
+	}
 	if fs.NArg() != 1 {
 		fatalf("usage: delete <fingerprint>")
 	}
@@ -226,6 +235,18 @@ func cmdDelete(args []string) {
 	}
 	if err := st.Delete(fp); err != nil {
 		fatalf("delete: %v", err)
+	}
+}
+
+func writeOrFatal(w io.Writer, format string, args ...any) {
+	if _, err := fmt.Fprintf(w, format, args...); err != nil {
+		fatalf("write output: %v", err)
+	}
+}
+
+func flushOrFatal(w *tabwriter.Writer) {
+	if err := w.Flush(); err != nil {
+		fatalf("flush output: %v", err)
 	}
 }
 

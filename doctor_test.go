@@ -2,11 +2,17 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 func TestDoctorReportsDefaultsWithoutCreatingFiles(t *testing.T) {
 	dir := t.TempDir()
@@ -48,5 +54,12 @@ func TestDoctorRejectsInvalidConfig(t *testing.T) {
 	var out bytes.Buffer
 	if err := runDoctor([]string{"--config", path}, &out); err == nil {
 		t.Fatal("runDoctor accepted invalid config")
+	}
+}
+
+func TestDoctorReportsOutputFailure(t *testing.T) {
+	err := runDoctor([]string{"--db", filepath.Join(t.TempDir(), "missing.db")}, failingWriter{})
+	if !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("runDoctor error = %v, want closed pipe", err)
 	}
 }
