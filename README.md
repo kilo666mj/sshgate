@@ -28,8 +28,9 @@ authentication, and its normal hardening must remain in place.
 
 Fingerprints describe an SSH client's advertised implementation and algorithm
 set, not a unique device or user. Multiple machines may produce the same value.
-Blocked and pending clients may receive the SSH banner, but they do not complete
-key exchange with the backend.
+Blocked and pending clients may receive a cached SSH banner, but they do not open
+a backend connection. SSHGate reads the backend banner once per route at startup.
+The backend must be reachable when SSHGate starts.
 
 ## Safe quick start
 

@@ -122,12 +122,3 @@ active sessions — including Ansible's own connection when it runs through
 Note that fingerprint approve/block changes never require a restart at all: each
 new connection reads its verdict from the database live. Only binary upgrades and
 `--route`/config changes need the process to reload.
-
-## Site-specific migration scripts
-
-The scripts under `scripts/` migrate the original author's randomized-port SSH
-setup. They are examples, not the general installation path. They contain
-firewall, service, `sshd`, and path assumptions; review them and use `--dry-run`
-first. A migration refuses to proceed unless at least one
-`--approve 'HASH|LABEL'` is supplied or enrollment is explicitly enabled with
-`--allow-unknown`. Always keep a recovery SSH session open.

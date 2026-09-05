@@ -70,6 +70,9 @@ Configuration fields:
 | `control_plane.server_name` | No | TLS name override when URL host and certificate differ. |
 | `control_plane.sync_interval` | No | Go duration such as `30s`; defaults to 30 seconds. |
 
+The control-plane URL must use HTTPS. HTTP URLs and redirects are rejected,
+including redirects to another HTTPS endpoint. Configure the final URL directly.
+
 Bearer authentication requires `token`. mTLS instead requires all three of
 `client_cert`, `client_key`, and `ca`. Do not commit tokens or private keys.
 
@@ -85,10 +88,21 @@ sshgate doctor \
 ```
 
 `max_fingerprints` caps stored fingerprint entries. `0` (the default when unset)
-applies a built-in cap of 100000, which bounds disk growth from randomized
-KEXINIT material; set `-1` for unlimited storage. When the store exceeds the
-cap, the oldest non-approved entries are pruned first; approved fingerprints are
-never pruned.
+applies a built-in cap of 100000; set `-1` for unlimited fingerprint count.
+New observations enforce the cap in the same transaction; periodic pruning also
+handles rows added by policy synchronization. The oldest non-approved entries
+are pruned first; approved fingerprints are never pruned.
+
+The initial SSH packet is limited to 32 KiB, and encoded fingerprint metadata to
+64 KiB. Each fingerprint retains at most 128 IPs, 128 ports, and the 128 most
+recent IP/port sightings. The compatibility IP and port sets retain the first
+128 values in sorted order. On opening an older database, excess history and
+oversized metadata are removed while verdicts, labels, and counts are preserved.
+SQLite can reuse freed pages; the file does not necessarily shrink.
+
+Control-plane uploads use pages of 16 fingerprints instead of loading the entire
+database into memory. Limits apply even to blocked clients. `-1` only disables
+the fingerprint-count cap; metadata and history remain bounded.
 
 When `control_plane.url` is set, `sshgate` syncs observed fingerprints to
 `gatehub` and pulls approval decisions. Set `token` for bearer-token auth, or
@@ -113,6 +127,9 @@ events there. Use `--window 5m` to widen the matching window.
 
 - **Permission denied opening the database:** the service user needs write
   access to the database directory, not only the database file.
+- **Backend identification changed:** after an `sshd` upgrade changes its banner,
+  the first allowed connection refreshes the cache and closes before forwarding
+  KEXINIT. Retry the connection; this preserves SSH exchange-hash verification.
 - **`BACKEND ... connection refused`:** verify `sshd` is listening on the
   backend address and port from `--route`.
 - **A client sees the banner but cannot log in:** unknown, pending, and blocked
@@ -128,7 +145,13 @@ events there. Use `--window 5m` to widen the matching window.
 
 ## Flood Limits
 
-Two built-in limits protect the proxy and fingerprint store:
+Rejected clients receive a cached backend identification and never open a backend
+connection. Each route probes its backend once during startup, with a ten-second
+timeout. Allowed connections verify the actual backend identification matches the
+cached value before forwarding KEXINIT. Backend dialing and handshake reads/writes
+are also bounded by timeouts.
+
+Two connection limits protect the proxy:
 
 - Per source IP: about 1 connection per second sustained, with a burst of 120.
   Connections over budget are dropped with a `RATELIMIT` log line.

@@ -38,7 +38,11 @@ var legacyColumns = []store.LegacyColumn{
 // NewStore opens the fingerprint database, folding a pre-gatekit schema into
 // the metadata bag if it finds one.
 func NewStore(path string) (*store.Store, error) {
-	return store.Open(store.Options{Path: path, Legacy: legacyColumns})
+	return newStoreWithLimit(path, 0)
+}
+
+func newStoreWithLimit(path string, limit int) (*store.Store, error) {
+	return store.Open(store.Options{Path: path, Legacy: legacyColumns, MaxFingerprints: limit})
 }
 
 // toMeta renders a fingerprinted KEXINIT into the store's metadata bag.
