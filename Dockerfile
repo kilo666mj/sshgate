@@ -16,6 +16,7 @@ RUN mkdir -p /data
 
 FROM scratch
 COPY --from=build /out/sshgate /sshgate
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build --chown=65532:65532 /data /var/lib/sshgate
 USER 65532:65532
 VOLUME ["/var/lib/sshgate"]

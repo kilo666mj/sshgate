@@ -13,7 +13,7 @@ import (
 
 const (
 	maxSSHLine   = 255
-	maxSSHPacket = 256 * 1024
+	maxSSHPacket = 32 * 1024
 	// maxIdentBytes caps total bytes buffered while looking for the SSH
 	// identification line. RFC 4253 allows preliminary lines before it; this
 	// bounds a client that streams junk (or omits the SSH- banner) so a single
@@ -122,6 +122,9 @@ func readSSHPacket(r *bufio.Reader) ([]byte, []byte, error) {
 }
 
 func parseKexInit(clientID string, payload []byte) (SSHFingerprint, error) {
+	if len(payload) > maxSSHPacket {
+		return SSHFingerprint{}, errors.New("KEXINIT payload too large")
+	}
 	if len(payload) < 17 || payload[0] != msgKexInit {
 		return SSHFingerprint{}, errors.New("first SSH packet is not SSH_MSG_KEXINIT")
 	}

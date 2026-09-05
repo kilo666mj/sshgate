@@ -137,3 +137,11 @@ func TestReadSSHLineRejectsUnterminatedLine(t *testing.T) {
 		t.Fatal("expected error for over-long unterminated line")
 	}
 }
+
+func TestOversizedKexRejectedBeforeReadingBody(t *testing.T) {
+	header := binary.BigEndian.AppendUint32(nil, maxSSHPacket+1)
+	header = append(header, 8)
+	if _, _, err := readSSHPacket(bufio.NewReader(bytes.NewReader(header))); err == nil || !strings.Contains(err.Error(), "invalid SSH packet length") {
+		t.Fatalf("oversized packet was not rejected from its header: %v", err)
+	}
+}

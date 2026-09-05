@@ -25,6 +25,7 @@ const (
 	rateSweepPeriod    = time.Minute
 	maxConcurrentConns = 1024
 	prunePeriod        = time.Minute
+	handshakeTimeout   = 10 * time.Second
 	// shutdownGrace bounds how long serve waits for in-flight connections to
 	// drain after a SIGINT/SIGTERM before exiting anyway.
 	shutdownGrace = 10 * time.Second
@@ -66,15 +67,15 @@ func cmdServe(args []string) {
 	defer process.Close()
 
 	log.Printf("sshgate version: %s", version)
-	log.Printf("database: %s", *dbPath)
-	st, err := NewStore(*dbPath)
-	if err != nil {
-		fatalf("open store: %v", err)
-	}
 	log.Printf("config: %s", *configPath)
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
 		fatalf("load config: %v", err)
+	}
+	log.Printf("database: %s", *dbPath)
+	st, err := newStoreWithLimit(*dbPath, cfg.MaxFingerprints)
+	if err != nil {
+		fatalf("open store: %v", err)
 	}
 	log.Printf("allow unknown: %t", *allowUnknown)
 
@@ -117,6 +118,10 @@ func cmdServe(args []string) {
 	proxyServer := gateproxy.NewServer(maxConcurrentConns, log.Printf)
 	var listeners []net.Listener
 	for _, route := range routes {
+		banner, err := loadBackendBanner(route.Backend)
+		if err != nil {
+			fatalf("read backend %s identification: %v", route.Backend, err)
+		}
 		ln, err := process.Listen("tcp", route.Listen)
 		if err != nil {
 			fatalf("listen %s: %v", route.Listen, err)
@@ -124,7 +129,7 @@ func cmdServe(args []string) {
 		listeners = append(listeners, ln)
 		log.Printf("LISTEN %s -> %s", route.Listen, route.Backend)
 		proxyServer.Serve(ln, route, func(conn net.Conn, route gateproxy.Route) {
-			handleConn(conn, route, st, *allowUnknown, limiter)
+			handleConn(conn, route, st, *allowUnknown, limiter, banner)
 		})
 	}
 
@@ -166,7 +171,7 @@ func cmdServe(args []string) {
 	}
 }
 
-func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUnknown bool, limiter *ratelimit.Limiter) {
+func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUnknown bool, limiter *ratelimit.Limiter, banner *backendBanner) {
 	clientIP := gateproxy.RemoteIP(client.RemoteAddr())
 	defer closeConnection(client, clientIP, "client")
 	if !limiter.Allow(clientIP) {
@@ -174,12 +179,11 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 		return
 	}
 
-	// SSH clients commonly wait for the server identification before sending
-	// KEXINIT, so the proxy has to complete the version-string exchange before
-	// it can fingerprint the client. The gate still happens before the client's
-	// KEXINIT is forwarded to the backend.
+	// Reuse the backend identification so clients can produce KEXINIT without
+	// opening an unauthenticated backend socket for every rejected connection.
+	serverID := banner.get()
 	clientReader := bufio.NewReader(client)
-	_ = client.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = client.SetDeadline(time.Now().Add(handshakeTimeout))
 	clientID, err := readSSHIdentification(clientReader)
 	if err != nil {
 		_ = client.SetReadDeadline(time.Time{})
@@ -191,36 +195,12 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 		return
 	}
 
-	backend, err := net.Dial("tcp", route.Backend)
-	if err != nil {
-		log.Printf("[%s] BACKEND %s: %v", clientIP, route.Backend, err)
-		return
-	}
-	defer closeConnection(backend, clientIP, "backend")
-
-	if _, err := backend.Write(clientID.bytes); err != nil {
-		log.Printf("[%s] BACKEND client identification write: %v", clientIP, err)
-		return
-	}
-
-	backendReader := bufio.NewReader(backend)
-	_ = backend.SetReadDeadline(time.Now().Add(10 * time.Second))
-	serverID, err := readSSHIdentification(backendReader)
-	_ = backend.SetReadDeadline(time.Time{})
-	if err != nil {
-		if isTimeout(err) {
-			log.Printf("[%s] BACKEND TIMEOUT awaiting SSH identification", clientIP)
-		} else {
-			log.Printf("[%s] BACKEND malformed SSH identification: %v", clientIP, err)
-		}
-		return
-	}
 	if _, err := client.Write(serverID.bytes); err != nil {
 		log.Printf("[%s] CLIENT server identification write: %v", clientIP, err)
 		return
 	}
 
-	_ = client.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = client.SetDeadline(time.Now().Add(handshakeTimeout))
 	kex, err := readSSHKexInit(clientReader, clientID.id)
 	_ = client.SetReadDeadline(time.Time{})
 	if err != nil {
@@ -235,6 +215,7 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 	entry, err := st.Observe(store.Observation{
 		Fingerprint: kex.fingerprint.Hash,
 		IP:          clientIP,
+		Port:        route.Port,
 		Meta:        kex.fingerprint.toMeta(),
 	}, !allowUnknown)
 	if err != nil {
@@ -256,11 +237,42 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 		log.Printf("[%s] PENDING allowed %s client=%q", clientIP, kex.fingerprint.Hash, kex.fingerprint.ClientID)
 	}
 
+	backend, err := net.DialTimeout("tcp", route.Backend, handshakeTimeout)
+	if err != nil {
+		log.Printf("[%s] BACKEND %s: %v", clientIP, route.Backend, err)
+		return
+	}
+	defer closeConnection(backend, clientIP, "backend")
+
+	_ = backend.SetDeadline(time.Now().Add(handshakeTimeout))
+	if _, err := backend.Write(clientID.bytes); err != nil {
+		log.Printf("[%s] BACKEND client identification write: %v", clientIP, err)
+		return
+	}
+
+	backendReader := bufio.NewReader(backend)
+	actualID, err := readSSHIdentification(backendReader)
+	if err != nil {
+		if isTimeout(err) {
+			log.Printf("[%s] BACKEND TIMEOUT awaiting SSH identification", clientIP)
+		} else {
+			log.Printf("[%s] BACKEND malformed SSH identification: %v", clientIP, err)
+		}
+		return
+	}
+	if actualID.id != serverID.id {
+		banner.set(actualID)
+		log.Printf("[%s] BACKEND identification changed; reconnect to retry", clientIP)
+		return
+	}
+
 	if _, err := backend.Write(kex.bytes); err != nil {
 		log.Printf("[%s] BACKEND KEXINIT write: %v", clientIP, err)
 		return
 	}
 
+	_ = client.SetDeadline(time.Time{})
+	_ = backend.SetDeadline(time.Time{})
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go proxyCopy(&wg, backend, clientReader, client)
