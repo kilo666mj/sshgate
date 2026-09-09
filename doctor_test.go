@@ -62,6 +62,24 @@ func TestDoctorReportsMetricsEndpoint(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsMetricsEndpointFromConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"metrics_listen":"127.0.0.1:9208"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := runDoctor([]string{
+		"--db", filepath.Join(dir, "missing.db"),
+		"--config", configPath,
+	}, &out); err != nil {
+		t.Fatalf("runDoctor: %v", err)
+	}
+	if want := "metrics: http://127.0.0.1:9208/metrics"; !strings.Contains(out.String(), want) {
+		t.Errorf("output missing %q:\n%s", want, out.String())
+	}
+}
+
 func TestDoctorRejectsInvalidConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"max_fingerprints":-2}`), 0o600); err != nil {

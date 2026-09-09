@@ -70,6 +70,7 @@ Put flags before the fingerprint argument.
 ```json
 {
   "max_fingerprints": 100000,
+  "metrics_listen": "127.0.0.1:9108",
   "control_plane": {
     "url": "https://gatehub.example.com",
     "instance_id": "public-ssh",
@@ -84,6 +85,7 @@ Configuration fields:
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `max_fingerprints` | No | Stored-entry cap. `0` uses 100000; `-1` is unlimited. |
+| `metrics_listen` | No | Prometheus listen address. Empty disables metrics. |
 | `control_plane.url` | Enables sync | Gatehub base URL. Omitting it disables sync. |
 | `control_plane.instance_id` | With URL | Stable name for this SSHGate instance. |
 | `control_plane.token` | One auth method | Bearer token used to authenticate to Gatehub. |

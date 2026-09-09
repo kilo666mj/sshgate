@@ -42,6 +42,7 @@ func TestLoadConfigParsesControlPlane(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	data := `{
 		"max_fingerprints": 100,
+		"metrics_listen": "127.0.0.1:9108",
 		"control_plane": {
 			"url": "https://gatehub.example.com/base",
 			"instance_id": "public-ssh",
@@ -67,6 +68,9 @@ func TestLoadConfigParsesControlPlane(t *testing.T) {
 	}
 	if cfg.ControlPlane.URL != "https://gatehub.example.com/base" {
 		t.Fatalf("control plane url = %q", cfg.ControlPlane.URL)
+	}
+	if cfg.MetricsListen != "127.0.0.1:9108" {
+		t.Fatalf("metrics listen = %q", cfg.MetricsListen)
 	}
 	if err := cfg.ControlPlane.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)

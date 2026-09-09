@@ -21,6 +21,7 @@ type AppConfig struct {
 	// defaultMaxFingerprints; -1 means unlimited. Approved entries are never
 	// evicted; oldest non-approved entries are pruned first.
 	MaxFingerprints int                 `json:"max_fingerprints"`
+	MetricsListen   string              `json:"metrics_listen"`
 	ControlPlane    controlplane.Config `json:"control_plane"`
 }
 

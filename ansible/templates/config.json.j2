@@ -1,4 +1,5 @@
 {
   "max_fingerprints": {{ sshgate_max_fingerprints | int }},
+  "metrics_listen": {{ sshgate_metrics_listen | default('127.0.0.1:9108') | to_json }},
   "control_plane": {{ sshgate_effective_control_plane | to_nice_json }}
 }

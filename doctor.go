@@ -70,6 +70,10 @@ func runDoctor(args []string, out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	metricsAddress := cfg.MetricsListen
+	if *metricsListen != "" {
+		metricsAddress = *metricsListen
+	}
 	if err := writeOutput(out, "max fingerprints: %d\n", cfg.MaxFingerprints); err != nil {
 		return err
 	}
@@ -85,12 +89,12 @@ func runDoctor(args []string, out io.Writer) error {
 			return err
 		}
 	}
-	if *metricsListen == "" {
+	if metricsAddress == "" {
 		if err := writeOutput(out, "metrics: disabled\n"); err != nil {
 			return err
 		}
 	} else {
-		if err := writeOutput(out, "metrics: http://%s/metrics\n", *metricsListen); err != nil {
+		if err := writeOutput(out, "metrics: http://%s/metrics\n", metricsAddress); err != nil {
 			return err
 		}
 	}

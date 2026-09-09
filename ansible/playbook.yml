@@ -196,13 +196,30 @@
               static_configs:
                 - targets:
                     - {{ sshgate_prometheus_target | default('127.0.0.1:9108') | to_json }}
-        validate: "/usr/bin/promtool check config %s"
+        # Temporary validation files live outside /etc/prometheus, so full
+        # validation would resolve existing relative rule/certificate paths
+        # against the temporary directory. Check syntax before replacement,
+        # then validate all references against the installed file below.
+        validate: "/usr/bin/promtool check config --syntax-only %s"
         backup: true
       when:
         - sshgate_configure_local_prometheus | default(true) | bool
         - sshgate_metrics_listen | default('127.0.0.1:9108') | length > 0
         - sshgate_prometheus_config_file.stat.exists
       notify: Reload prometheus
+
+    - name: Validate the installed Prometheus configuration
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/promtool
+          - check
+          - config
+          - "{{ sshgate_prometheus_config | default('/etc/prometheus/prometheus.yml') }}"
+      changed_when: false
+      when:
+        - sshgate_configure_local_prometheus | default(true) | bool
+        - sshgate_metrics_listen | default('127.0.0.1:9108') | length > 0
+        - sshgate_prometheus_config_file.stat.exists
 
     - name: Verify the sshgate metrics endpoint
       ansible.builtin.uri:

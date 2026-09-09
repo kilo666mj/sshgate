@@ -79,7 +79,9 @@ The Ansible service exposes Prometheus metrics at
 `http://127.0.0.1:9108/metrics` by default. Set `sshgate_metrics_listen` to an
 empty string to disable it, or to another address when a remote Prometheus
 server must scrape the service. Secure any non-loopback listener with firewall
-rules or a private monitoring network.
+rules or a private monitoring network. Ansible writes the address into
+`config.json` so graceful upgrades can apply changes without replacing the
+process command line or dropping live SSH sessions.
 
 When `/etc/prometheus/prometheus.yml` exists, the playbook also adds a managed
 `sshgate` scrape job, validates the complete configuration with `promtool`, and

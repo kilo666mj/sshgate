@@ -75,6 +75,10 @@ func cmdServe(args []string) {
 	if err != nil {
 		fatalf("load config: %v", err)
 	}
+	metricsAddress := cfg.MetricsListen
+	if *metricsListen != "" {
+		metricsAddress = *metricsListen
+	}
 	log.Printf("database: %s", *dbPath)
 	st, err := newStoreWithLimit(*dbPath, cfg.MaxFingerprints)
 	if err != nil {
@@ -120,7 +124,7 @@ func cmdServe(args []string) {
 
 	proxyServer := gateproxy.NewServer(maxConcurrentConns, log.Printf)
 	var metrics *serverMetrics
-	if *metricsListen != "" {
+	if metricsAddress != "" {
 		metrics = newServerMetrics(version)
 	}
 	var listeners []net.Listener
@@ -142,10 +146,10 @@ func cmdServe(args []string) {
 	}
 
 	var metricsServer *http.Server
-	if *metricsListen != "" {
-		ln, err := process.Listen("tcp", *metricsListen)
+	if metricsAddress != "" {
+		ln, err := process.Listen("tcp", metricsAddress)
 		if err != nil {
-			fatalf("listen for metrics on %s: %v", *metricsListen, err)
+			fatalf("listen for metrics on %s: %v", metricsAddress, err)
 		}
 		listeners = append(listeners, ln)
 		mux := http.NewServeMux()
@@ -162,7 +166,7 @@ func cmdServe(args []string) {
 				log.Printf("metrics server: %v", err)
 			}
 		}()
-		log.Printf("metrics: http://%s/metrics", *metricsListen)
+		log.Printf("metrics: http://%s/metrics", metricsAddress)
 	}
 
 	if err := process.Ready(); err != nil {
