@@ -54,6 +54,9 @@ sshgate_routes:
 sshgate_allow_unknown: false
 sshgate_max_fingerprints: 100000
 sshgate_metrics_listen: "127.0.0.1:9108"
+sshgate_configure_local_prometheus: true
+sshgate_prometheus_config: /etc/prometheus/prometheus.yml
+sshgate_prometheus_target: "127.0.0.1:9108"
 sshgate_control_plane: {}
 sshgate_approved_fingerprints: []
 sshgate_goarch: amd64
@@ -77,6 +80,12 @@ The Ansible service exposes Prometheus metrics at
 empty string to disable it, or to another address when a remote Prometheus
 server must scrape the service. Secure any non-loopback listener with firewall
 rules or a private monitoring network.
+
+When `/etc/prometheus/prometheus.yml` exists, the playbook also adds a managed
+`sshgate` scrape job, validates the complete configuration with `promtool`, and
+reloads Prometheus. Set `sshgate_configure_local_prometheus: false` when another
+configuration manager owns that file. `sshgate_prometheus_config` and
+`sshgate_prometheus_target` override the config path and scrape target.
 
 You can also seed approved fingerprints during deployment:
 

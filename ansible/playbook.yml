@@ -182,10 +182,48 @@
         enabled: true
         state: started
 
+    - name: Check for a local Prometheus configuration
+      ansible.builtin.stat:
+        path: "{{ sshgate_prometheus_config | default('/etc/prometheus/prometheus.yml') }}"
+      register: sshgate_prometheus_config_file
+
+    - name: Configure local Prometheus to scrape sshgate
+      ansible.builtin.blockinfile:
+        path: "{{ sshgate_prometheus_config | default('/etc/prometheus/prometheus.yml') }}"
+        marker: "# {mark} ANSIBLE MANAGED SSHGATE METRICS"
+        block: |2
+            - job_name: sshgate
+              static_configs:
+                - targets:
+                    - {{ sshgate_prometheus_target | default('127.0.0.1:9108') | to_json }}
+        validate: "/usr/bin/promtool check config %s"
+        backup: true
+      when:
+        - sshgate_configure_local_prometheus | default(true) | bool
+        - sshgate_metrics_listen | default('127.0.0.1:9108') | length > 0
+        - sshgate_prometheus_config_file.stat.exists
+      notify: Reload prometheus
+
+    - name: Verify the sshgate metrics endpoint
+      ansible.builtin.uri:
+        url: "http://{{ sshgate_prometheus_target | default('127.0.0.1:9108') }}/metrics"
+        return_content: true
+        status_code: 200
+      register: sshgate_metrics_response
+      failed_when: >-
+        sshgate_metrics_response.status != 200 or
+        'sshgate_build_info' not in sshgate_metrics_response.content
+      when: sshgate_metrics_listen | default('127.0.0.1:9108') | length > 0
+
   handlers:
     - name: Reload systemd
       ansible.builtin.systemd:
         daemon_reload: true
+
+    - name: Reload prometheus
+      ansible.builtin.systemd:
+        name: prometheus
+        state: reloaded
 
     # reload-or-restart performs a graceful upgrade when sshgate is already
     # running: systemctl runs ExecReload (SIGHUP), tableflip re-execs the new
