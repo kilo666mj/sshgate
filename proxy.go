@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -46,6 +48,7 @@ func cmdServe(args []string) {
 	dbPath := fs.String("db", defaultDB, "database path")
 	configPath := fs.String("config", defaultConfig, "config path")
 	allowUnknown := fs.Bool("allow-unknown", false, "allow pending fingerprints")
+	metricsListen := fs.String("metrics-listen", "", "Prometheus metrics listen address (disabled when empty)")
 	drainTimeout := fs.Duration("drain-timeout", defaultDrainTimeout, "on upgrade/shutdown, how long to wait for existing connections to finish (0 = forever)")
 	var routes gateproxy.Routes
 	fs.Var(&routes, "route", "route in LISTEN=BACKEND form, repeatable")
@@ -116,8 +119,13 @@ func cmdServe(args []string) {
 	go limiter.RunSweeper(rateSweepPeriod, bgCtx.Done())
 
 	proxyServer := gateproxy.NewServer(maxConcurrentConns, log.Printf)
+	var metrics *serverMetrics
+	if *metricsListen != "" {
+		metrics = newServerMetrics(version)
+	}
 	var listeners []net.Listener
 	for _, route := range routes {
+		metrics.initializeRoute(route.Listen)
 		banner, err := loadBackendBanner(route.Backend)
 		if err != nil {
 			fatalf("read backend %s identification: %v", route.Backend, err)
@@ -129,8 +137,32 @@ func cmdServe(args []string) {
 		listeners = append(listeners, ln)
 		log.Printf("LISTEN %s -> %s", route.Listen, route.Backend)
 		proxyServer.Serve(ln, route, func(conn net.Conn, route gateproxy.Route) {
-			handleConn(conn, route, st, *allowUnknown, limiter, banner)
+			handleConn(conn, route, st, *allowUnknown, limiter, banner, metrics)
 		})
+	}
+
+	var metricsServer *http.Server
+	if *metricsListen != "" {
+		ln, err := process.Listen("tcp", *metricsListen)
+		if err != nil {
+			fatalf("listen for metrics on %s: %v", *metricsListen, err)
+		}
+		listeners = append(listeners, ln)
+		mux := http.NewServeMux()
+		mux.Handle("GET /metrics", metrics.handler())
+		metricsServer = &http.Server{
+			Handler:           mux,
+			ReadHeaderTimeout: handshakeTimeout,
+			ReadTimeout:       handshakeTimeout,
+			WriteTimeout:      handshakeTimeout,
+			IdleTimeout:       time.Minute,
+		}
+		go func() {
+			if err := metricsServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+				log.Printf("metrics server: %v", err)
+			}
+		}()
+		log.Printf("metrics: http://%s/metrics", *metricsListen)
 	}
 
 	if err := process.Ready(); err != nil {
@@ -148,6 +180,13 @@ func cmdServe(args []string) {
 	// proxied streams keep running on their own goroutines.
 	for _, ln := range listeners {
 		_ = ln.Close()
+	}
+	if metricsServer != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutdown metrics server: %v", err)
+		}
+		cancel()
 	}
 	stopBackground()
 
@@ -171,10 +210,14 @@ func cmdServe(args []string) {
 	}
 }
 
-func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUnknown bool, limiter *ratelimit.Limiter, banner *backendBanner) {
+func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUnknown bool, limiter *ratelimit.Limiter, banner *backendBanner, metrics *serverMetrics) {
+	result := "internal_error"
+	metrics.connectionStarted(route.Listen)
+	defer func() { metrics.connectionFinished(route.Listen, result) }()
 	clientIP := gateproxy.RemoteIP(client.RemoteAddr())
 	defer closeConnection(client, clientIP, "client")
-	if !limiter.Allow(clientIP) {
+	if limiter != nil && !limiter.Allow(clientIP) {
+		result = "rate_limited"
 		log.Printf("[%s] RATELIMIT dropping connection", clientIP)
 		return
 	}
@@ -188,14 +231,17 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 	if err != nil {
 		_ = client.SetReadDeadline(time.Time{})
 		if isTimeout(err) {
+			result = "identification_timeout"
 			log.Printf("[%s] TIMEOUT awaiting SSH identification", clientIP)
 		} else {
+			result = "malformed_identification"
 			log.Printf("[%s] BLOCKED malformed SSH identification: %v", clientIP, err)
 		}
 		return
 	}
 
 	if _, err := client.Write(serverID.bytes); err != nil {
+		result = "client_write_error"
 		log.Printf("[%s] CLIENT server identification write: %v", clientIP, err)
 		return
 	}
@@ -205,8 +251,10 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 	_ = client.SetReadDeadline(time.Time{})
 	if err != nil {
 		if isTimeout(err) {
+			result = "kexinit_timeout"
 			log.Printf("[%s] TIMEOUT awaiting SSH KEXINIT", clientIP)
 		} else {
+			result = "malformed_kexinit"
 			log.Printf("[%s] BLOCKED malformed SSH KEXINIT: %v", clientIP, err)
 		}
 		return
@@ -219,6 +267,7 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 		Meta:        kex.fingerprint.toMeta(),
 	}, !allowUnknown)
 	if err != nil {
+		result = "store_error"
 		log.Printf("[%s] BLOCKED store error: %v", clientIP, err)
 		return
 	}
@@ -227,10 +276,12 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 	case StatusApproved:
 		log.Printf("[%s] APPROVED %s label=%q client=%q", clientIP, kex.fingerprint.Hash, entry.Label, kex.fingerprint.ClientID)
 	case StatusBlocked:
+		result = "blocked"
 		log.Printf("[%s] BLOCKED %s label=%q client=%q", clientIP, kex.fingerprint.Hash, entry.Label, kex.fingerprint.ClientID)
 		return
 	default:
 		if !allowUnknown {
+			result = "pending"
 			log.Printf("[%s] PENDING %s client=%q", clientIP, kex.fingerprint.Hash, kex.fingerprint.ClientID)
 			return
 		}
@@ -239,6 +290,7 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 
 	backend, err := net.DialTimeout("tcp", route.Backend, handshakeTimeout)
 	if err != nil {
+		result = "backend_dial_error"
 		log.Printf("[%s] BACKEND %s: %v", clientIP, route.Backend, err)
 		return
 	}
@@ -246,6 +298,7 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 
 	_ = backend.SetDeadline(time.Now().Add(handshakeTimeout))
 	if _, err := backend.Write(clientID.bytes); err != nil {
+		result = "backend_write_error"
 		log.Printf("[%s] BACKEND client identification write: %v", clientIP, err)
 		return
 	}
@@ -253,6 +306,7 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 	backendReader := bufio.NewReader(backend)
 	actualID, err := readSSHIdentification(backendReader)
 	if err != nil {
+		result = "backend_handshake_error"
 		if isTimeout(err) {
 			log.Printf("[%s] BACKEND TIMEOUT awaiting SSH identification", clientIP)
 		} else {
@@ -261,12 +315,14 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 		return
 	}
 	if actualID.id != serverID.id {
+		result = "backend_banner_changed"
 		banner.set(actualID)
 		log.Printf("[%s] BACKEND identification changed; reconnect to retry", clientIP)
 		return
 	}
 
 	if _, err := backend.Write(kex.bytes); err != nil {
+		result = "backend_write_error"
 		log.Printf("[%s] BACKEND KEXINIT write: %v", clientIP, err)
 		return
 	}
@@ -275,9 +331,10 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 	_ = backend.SetDeadline(time.Time{})
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go proxyCopy(&wg, backend, clientReader, client)
-	go proxyCopy(&wg, client, backendReader, backend)
+	go proxyCopy(&wg, backend, metricsReader{reader: clientReader, metrics: metrics, route: route.Listen, direction: "client_to_backend"}, client)
+	go proxyCopy(&wg, client, metricsReader{reader: backendReader, metrics: metrics, route: route.Listen, direction: "backend_to_client"}, backend)
 	wg.Wait()
+	result = "proxied"
 }
 
 func closeConnection(conn net.Conn, clientIP, side string) {
@@ -295,7 +352,7 @@ type closeWriter interface {
 // proxyCopy forwards from src (a bufio.Reader wrapping srcConn, so any bytes
 // buffered during the handshake are drained first) to dst, refreshing an idle
 // timeout on both conns around each read/write.
-func proxyCopy(wg *sync.WaitGroup, dst net.Conn, src *bufio.Reader, srcConn net.Conn) {
+func proxyCopy(wg *sync.WaitGroup, dst net.Conn, src io.Reader, srcConn net.Conn) {
 	defer wg.Done()
 	buf := make([]byte, 32*1024)
 	for {

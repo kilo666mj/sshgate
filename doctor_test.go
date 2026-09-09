@@ -34,6 +34,7 @@ func TestDoctorReportsDefaultsWithoutCreatingFiles(t *testing.T) {
 		"config: " + configPath + " (absent; built-in defaults apply)",
 		"max fingerprints: 100000",
 		"control plane: disabled",
+		"metrics: disabled",
 		"unknown fingerprints: allowed as pending (enrollment mode)",
 		"route: [::]:2222 -> 127.0.0.1:22",
 	} {
@@ -43,6 +44,21 @@ func TestDoctorReportsDefaultsWithoutCreatingFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
 		t.Fatalf("doctor created database: %v", err)
+	}
+}
+
+func TestDoctorReportsMetricsEndpoint(t *testing.T) {
+	var out bytes.Buffer
+	err := runDoctor([]string{
+		"--db", filepath.Join(t.TempDir(), "missing.db"),
+		"--config", filepath.Join(t.TempDir(), "missing.json"),
+		"--metrics-listen", "127.0.0.1:9108",
+	}, &out)
+	if err != nil {
+		t.Fatalf("runDoctor: %v", err)
+	}
+	if want := "metrics: http://127.0.0.1:9108/metrics"; !strings.Contains(out.String(), want) {
+		t.Errorf("output missing %q:\n%s", want, out.String())
 	}
 }
 

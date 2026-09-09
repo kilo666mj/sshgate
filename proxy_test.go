@@ -43,7 +43,7 @@ func TestRejectedClientNeverConnectsToBackend(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				handleConn(client, gateproxy.Route{Backend: ln.Addr().String()}, st, enrollment, nil, testBanner("SSH-2.0-test-server"))
+				handleConn(client, gateproxy.Route{Backend: ln.Addr().String()}, st, enrollment, nil, testBanner("SSH-2.0-test-server"), nil)
 			}()
 			if err := peer.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
 				t.Fatal(err)
@@ -135,7 +135,7 @@ func TestApprovedClientChecksBannerAndPreservesBufferedTraffic(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			handleConn(client, gateproxy.Route{Backend: ln.Addr().String()}, st, false, nil, banner)
+			handleConn(client, gateproxy.Route{Backend: ln.Addr().String()}, st, false, nil, banner, nil)
 		}()
 		_ = peer.SetDeadline(time.Now().Add(3 * time.Second))
 		if _, err := peer.Write([]byte("SSH-2.0-test\r\n")); err != nil {

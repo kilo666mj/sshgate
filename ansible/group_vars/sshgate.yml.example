@@ -8,4 +8,5 @@ sshgate_dest_port: 22
 sshgate_routes:
   - "{{ sshgate_listen_addr }}:{{ sshgate_source_port }}={{ sshgate_dest_host }}:{{ sshgate_dest_port }}"
 sshgate_allow_unknown: false
+sshgate_metrics_listen: "127.0.0.1:9108"
 sshgate_approved_fingerprints: []

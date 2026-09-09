@@ -24,6 +24,7 @@ func runDoctor(args []string, out io.Writer) error {
 	dbPath := fs.String("db", defaultDB, "database path")
 	configPath := fs.String("config", defaultConfig, "config path")
 	allowUnknown := fs.Bool("allow-unknown", false, "report enrollment mode")
+	metricsListen := fs.String("metrics-listen", "", "Prometheus metrics listen address")
 	var routes gateproxy.Routes
 	fs.Var(&routes, "route", "route in LISTEN=BACKEND form, repeatable")
 	if err := fs.Parse(args); err != nil {
@@ -81,6 +82,15 @@ func runDoctor(args []string, out io.Writer) error {
 		}
 	} else {
 		if err := writeOutput(out, "control plane: disabled\n"); err != nil {
+			return err
+		}
+	}
+	if *metricsListen == "" {
+		if err := writeOutput(out, "metrics: disabled\n"); err != nil {
+			return err
+		}
+	} else {
+		if err := writeOutput(out, "metrics: http://%s/metrics\n", *metricsListen); err != nil {
 			return err
 		}
 	}

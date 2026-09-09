@@ -53,6 +53,7 @@ SSH client ──> sshgate :2222 ──> sshd 127.0.0.1:22
 ./sshgate serve \
   --allow-unknown \
   --route '[::]:2222=127.0.0.1:22' \
+  --metrics-listen 127.0.0.1:9108 \
   --db ./sshgate.db \
   --config ./config.json
 ```

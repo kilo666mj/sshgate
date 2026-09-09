@@ -53,6 +53,7 @@ sshgate_routes:
   - "[::]:2222=127.0.0.1:22"
 sshgate_allow_unknown: false
 sshgate_max_fingerprints: 100000
+sshgate_metrics_listen: "127.0.0.1:9108"
 sshgate_control_plane: {}
 sshgate_approved_fingerprints: []
 sshgate_goarch: amd64
@@ -70,6 +71,12 @@ architecture unless `sshgate_goarch` is overridden.
 The Ansible default is deny-first: unknown fingerprints are recorded as blocked
 and are not forwarded. Set `sshgate_allow_unknown: true` temporarily during
 enrollment if you want new clients to pass through before approval.
+
+The Ansible service exposes Prometheus metrics at
+`http://127.0.0.1:9108/metrics` by default. Set `sshgate_metrics_listen` to an
+empty string to disable it, or to another address when a remote Prometheus
+server must scrape the service. Secure any non-loopback listener with firewall
+rules or a private monitoring network.
 
 You can also seed approved fingerprints during deployment:
 

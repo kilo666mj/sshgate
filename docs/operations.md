@@ -30,6 +30,29 @@ sshgate delete --db ./sshgate.db <fingerprint>
 The default database path is `/var/lib/sshgate/sshgate.db`.
 The default config path is `/etc/sshgate/config.json`.
 
+## Prometheus Metrics
+
+Enable the metrics endpoint with a dedicated listen address:
+
+```bash
+sshgate serve --metrics-listen 127.0.0.1:9108 \
+  --route '[::]:2222=127.0.0.1:22'
+curl http://127.0.0.1:9108/metrics
+```
+
+The endpoint is `GET /metrics`. It exports Go and process collectors plus:
+
+- `sshgate_build_info`
+- `sshgate_connections_total`
+- `sshgate_active_connections`
+- `sshgate_connection_results_total`
+- `sshgate_proxied_bytes_total`
+
+The `route` label is the configured SSH listen address. Connection results and
+traffic directions use bounded label values; client addresses and fingerprints
+are never labels. Metrics are disabled when `--metrics-listen` is omitted. Bind
+to loopback unless the endpoint is protected by a private monitoring network.
+
 The Ansible deployment uses the same database default, so management commands
 can use the default path:
 
