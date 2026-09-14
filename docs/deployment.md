@@ -6,7 +6,7 @@ Ansible deployment, configuration, fingerprint seeding, and zero-downtime proces
 
 Download static Linux binaries from the
 [GitHub releases page](https://github.com/kilo666mj/sshgate/releases), build
-from source with Go 1.26.5 or newer, or use the container image published at
+from source with Go 1.27.1 or newer, or use the container image published at
 `ghcr.io/kilo666mj/sshgate`.
 
 The container runs as UID 65532. A safe first run keeps the host's `sshd` on
