@@ -117,6 +117,8 @@ containers, inventory variables, fingerprint seeding, and reload behavior.
 
 - [Deployment and graceful upgrades](docs/deployment.md)
 - [Operations, configuration, troubleshooting, and fingerprint reference](docs/operations.md)
+- [How the five Gate projects fit together](https://github.com/kilo666mj/michaelspost-docs/blob/main/docs/guides/gate-stack.md)
+- [Gatekit node library](https://github.com/kilo666mj/gatekit)
 - [Gatehub control plane](https://github.com/kilo666mj/gatehub)
 
 ## License
