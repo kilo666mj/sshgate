@@ -138,28 +138,34 @@ host does not match the server certificate.
 
 ## Correlate
 
-`correlate` matches a fingerprint's known source IPs against `sshd` log lines
-near the fingerprint's first/last seen timestamps:
+`correlate` lists the `sshd` log lines for a fingerprint's sessions:
 
 ```bash
-sshgate correlate --db ./sshgate.db --log /var/log/auth.log <fingerprint>
+sshgate correlate --db ./sshgate.db --log /var/log/auth.log --gate-log /var/log/syslog <fingerprint>
 ```
 
-Use `--log /var/log/secure` on distributions that write SSH authentication
-events there. Use `--window 5m` to widen the matching window.
-
 When `sshd` only listens behind `sshgate`, it logs every client as the gate
-(for example `Accepted publickey for alice from 127.0.0.1 port 54321`), so
-source IPs do not match. Each connection forwarded to the backend logs a
-`CONNECTED` line with the local address of the backend socket:
+(for example `Accepted publickey for alice from 127.0.0.1 port 54321`). Each
+connection forwarded to the backend logs a `CONNECTED` line with the local
+address of the backend socket:
 
 ```text
 [203.0.113.7] CONNECTED <fingerprint> backend=127.0.0.1:22 local=127.0.0.1:54321
 ```
 
-The `local` port is the port `sshd` reports, so joining the two lines on host,
-port, and a short time window recovers the client IP and fingerprint for each
-authenticated session.
+The `local` port is the port `sshd` reports, so `correlate` joins each loopback
+`sshd` line to the fingerprint's `CONNECTED` line with the same host and port
+that is nearest in time within `--join-window` (default `10s`), and reports the
+client address from the gate. These rows show `SOURCE gate:<port>`. `sshgate`
+logs to the journal; `--gate-log` defaults to `/var/log/syslog`, where rsyslog
+copies it on Debian. If that file is missing, `correlate` warns and reports
+direct connections only.
+
+`sshd` lines from a real client address (connections that reached `sshd`
+directly) are matched against the fingerprint's known source IPs near its
+first/last seen timestamps and show `SOURCE direct`. Use `--window 5m` to widen
+that window, and `--log /var/log/secure` on distributions that write SSH
+authentication events there.
 
 ## Troubleshooting
 
