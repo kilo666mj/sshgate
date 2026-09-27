@@ -299,6 +299,9 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 		return
 	}
 	defer closeConnection(backend, clientIP, "backend")
+	// The backend sees sshgate as the peer, so sshd logs "from 127.0.0.1 port
+	// N". Logging the local address lets that line be joined to the client IP.
+	log.Printf("[%s] CONNECTED %s backend=%s local=%s", clientIP, kex.fingerprint.Hash, route.Backend, backend.LocalAddr())
 
 	_ = backend.SetDeadline(time.Now().Add(handshakeTimeout))
 	if _, err := backend.Write(clientID.bytes); err != nil {
