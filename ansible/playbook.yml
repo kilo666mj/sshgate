@@ -19,6 +19,9 @@
       armv6l: arm
     sshgate_goarch: "{{ sshgate_goarch_map.get(ansible_facts['architecture'], ansible_facts['architecture']) }}"
     sshgate_build_output: "{{ playbook_dir }}/../sshgate-{{ sshgate_goos }}-{{ sshgate_goarch }}"
+    sshgate_deploy_version: "{{ sshgate_git_describe.stdout | default('dev', true) | trim }}"
+    sshgate_metrics_url: "http://{{ sshgate_prometheus_target | default('127.0.0.1:9108') }}/metrics"
+    sshgate_expected_build_info: 'sshgate_build_info{version="{{ sshgate_deploy_version }}"}'
 
   tasks:
     - name: Install firewalld
@@ -52,23 +55,23 @@
       changed_when: false
       register: sshgate_git_describe
       failed_when: false
+      tags: [code]
 
     - name: Build sshgate locally
       ansible.builtin.command:
         cmd: >-
           go build -trimpath
-          -ldflags "-s -w -X main.version={{ sshgate_version }}"
+          -ldflags "-s -w -X main.version={{ sshgate_deploy_version }}"
           -o {{ sshgate_build_output | quote }} .
         chdir: "{{ playbook_dir }}/.."
       environment:
         CGO_ENABLED: "0"
         GOOS: "{{ sshgate_goos }}"
         GOARCH: "{{ sshgate_goarch }}"
-      vars:
-        sshgate_version: "{{ sshgate_git_describe.stdout | default('dev', true) | trim }}"
       delegate_to: localhost
       become: false
       changed_when: true
+      tags: [code]
 
     - name: Create sshgate group
       ansible.builtin.group:
@@ -108,6 +111,21 @@
         group: root
         mode: "0755"
       notify: Restart sshgate
+      tags: [code]
+
+    # An unchanged binary does not notify the restart handler, so a run that
+    # failed after installing it (dropping the pending handler) would leave the
+    # old process running forever. Restart whenever the running version differs.
+    - name: Check which sshgate version is running
+      ansible.builtin.uri:
+        url: "{{ sshgate_metrics_url }}"
+        return_content: true
+      register: sshgate_running_metrics
+      failed_when: false
+      changed_when: sshgate_expected_build_info not in (sshgate_running_metrics.content | default(''))
+      notify: Restart sshgate
+      when: sshgate_metrics_listen | default('127.0.0.1:9108') | length > 0
+      tags: [code]
 
     - name: Check for existing sshgate config
       ansible.builtin.stat:
@@ -167,14 +185,17 @@
 
     - name: Apply service changes before first start
       ansible.builtin.meta: flush_handlers
+      tags: [code]
 
     - name: Reset connection after sshgate restart
       ansible.builtin.meta: reset_connection
+      tags: [code]
 
     - name: Wait for sshgate to accept connections again
       ansible.builtin.wait_for_connection:
         delay: 2
         timeout: 30
+      tags: [code]
 
     - name: Enable and start sshgate
       ansible.builtin.systemd:
@@ -221,16 +242,22 @@
         - sshgate_metrics_listen | default('127.0.0.1:9108') | length > 0
         - sshgate_prometheus_config_file.stat.exists
 
-    - name: Verify the sshgate metrics endpoint
+    # The restart handler is fire-and-forget and a graceful reload hands off to
+    # the new binary asynchronously, so poll until the running process reports
+    # the version that was just built.
+    - name: Verify sshgate is running the deployed version
       ansible.builtin.uri:
-        url: "http://{{ sshgate_prometheus_target | default('127.0.0.1:9108') }}/metrics"
+        url: "{{ sshgate_metrics_url }}"
         return_content: true
         status_code: 200
       register: sshgate_metrics_response
-      failed_when: >-
-        sshgate_metrics_response.status != 200 or
-        'sshgate_build_info' not in sshgate_metrics_response.content
+      until: >-
+        sshgate_metrics_response.status == 200 and
+        sshgate_expected_build_info in sshgate_metrics_response.content
+      retries: 15
+      delay: 2
       when: sshgate_metrics_listen | default('127.0.0.1:9108') | length > 0
+      tags: [code]
 
   handlers:
     - name: Reload systemd

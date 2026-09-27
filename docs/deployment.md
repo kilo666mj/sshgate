@@ -41,6 +41,19 @@ ansible-playbook --syntax-check playbook.yml
 ansible-playbook playbook.yml
 ```
 
+For a code-only upgrade, `--tags code` builds the checkout, installs the binary,
+restarts the service (gracefully when it is already running), and waits until
+the metrics endpoint reports the version that was just built. It skips
+firewall, user, config, fingerprint seeding, and Prometheus tasks:
+
+```bash
+ansible-playbook playbook.yml --tags code
+```
+
+Every run restarts `sshgate` when the running version differs from the build, so
+a run that failed after installing the binary is completed by the next run even
+though the binary on disk is already current.
+
 The real inventory and group variables files are ignored so deployment-specific
 host names, fingerprints, and settings are not committed accidentally. Override
 variables in `group_vars/sshgate.yml`, the inventory, or with `-e` as needed:
