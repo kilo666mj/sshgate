@@ -148,6 +148,19 @@ sshgate correlate --db ./sshgate.db --log /var/log/auth.log <fingerprint>
 Use `--log /var/log/secure` on distributions that write SSH authentication
 events there. Use `--window 5m` to widen the matching window.
 
+When `sshd` only listens behind `sshgate`, it logs every client as the gate
+(for example `Accepted publickey for alice from 127.0.0.1 port 54321`), so
+source IPs do not match. Each connection forwarded to the backend logs a
+`CONNECTED` line with the local address of the backend socket:
+
+```text
+[203.0.113.7] CONNECTED <fingerprint> backend=127.0.0.1:22 local=127.0.0.1:54321
+```
+
+The `local` port is the port `sshd` reports, so joining the two lines on host,
+port, and a short time window recovers the client IP and fingerprint for each
+authenticated session.
+
 ## Troubleshooting
 
 - **Permission denied opening the database:** the service user needs write

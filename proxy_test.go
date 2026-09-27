@@ -4,8 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"log"
 	"net"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -167,5 +170,97 @@ func TestApprovedClientChecksBannerAndPreservesBufferedTraffic(t *testing.T) {
 		if banner.get().id != "SSH-2.0-new-server" {
 			t.Fatal("banner was not refreshed")
 		}
+	}
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestConnectedLogsBackendLocalAddress(t *testing.T) {
+	logs := &lockedBuffer{}
+	prev := log.Writer()
+	log.SetOutput(logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	st, err := NewStore(filepath.Join(t.TempDir(), "gate.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	packet := kexInitPacket()
+	kex, err := readSSHKexInit(bufio.NewReader(bytes.NewReader(packet)), "SSH-2.0-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertStatus(kex.fingerprint.Hash, StatusApproved, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// The backend's view of its peer is what sshd would log as "port N".
+	backendPeer := make(chan string, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			backendPeer <- ""
+			return
+		}
+		defer func() { _ = c.Close() }()
+		backendPeer <- c.RemoteAddr().String()
+		_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+		r := bufio.NewReader(c)
+		if _, err := r.ReadString('\n'); err != nil {
+			return
+		}
+		if _, err := c.Write([]byte("SSH-2.0-test-server\r\n")); err != nil {
+			return
+		}
+		_, _ = io.Copy(io.Discard, r)
+	}()
+
+	client, peer := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handleConn(client, gateproxy.Route{Backend: ln.Addr().String()}, st, false, nil, testBanner("SSH-2.0-test-server"), nil)
+	}()
+	_ = peer.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err := peer.Write([]byte("SSH-2.0-test\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bufio.NewReader(peer).ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.Write(packet); err != nil {
+		t.Fatal(err)
+	}
+	peerAddr := <-backendPeer
+	_ = peer.Close()
+	<-done
+
+	if peerAddr == "" {
+		t.Fatal("backend never accepted a connection")
+	}
+	want := "CONNECTED " + kex.fingerprint.Hash + " backend=" + ln.Addr().String() + " local=" + peerAddr
+	if !strings.Contains(logs.String(), want) {
+		t.Fatalf("log missing %q\ngot:\n%s", want, logs.String())
 	}
 }
