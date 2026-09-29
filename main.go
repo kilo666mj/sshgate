@@ -12,7 +12,7 @@ import (
 	"text/tabwriter"
 	"unicode"
 
-	"github.com/kilo666mj/gatekit/store"
+	"go.michaelspost.com/gatekit/store"
 )
 
 const (

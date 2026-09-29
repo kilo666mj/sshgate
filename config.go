@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/kilo666mj/gatekit/controlplane"
+	"go.michaelspost.com/gatekit/controlplane"
 	"os"
 )
 

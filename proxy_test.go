@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	gateproxy "github.com/kilo666mj/gatekit/proxy"
+	gateproxy "go.michaelspost.com/gatekit/proxy"
 )
 
 func testBanner(id string) *backendBanner {
