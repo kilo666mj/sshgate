@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	gateproxy "github.com/kilo666mj/gatekit/proxy"
+	gateproxy "go.michaelspost.com/gatekit/proxy"
 )
 
 func cmdDoctor(args []string) {

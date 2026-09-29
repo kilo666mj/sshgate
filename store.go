@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/kilo666mj/gatekit/store"
+	"go.michaelspost.com/gatekit/store"
 )
 
 // The fingerprint store itself lives in gatekit, shared with tlsgate. What

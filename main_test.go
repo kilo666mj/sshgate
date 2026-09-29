@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kilo666mj/gatekit/store"
+	"go.michaelspost.com/gatekit/store"
 )
 
 // Re-approving a labelled fingerprint without repeating --label used to blank

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kilo666mj/gatekit/store"
+	"go.michaelspost.com/gatekit/store"
 )
 
 const testFP = "aaf62b02afeaa8df0687aa49b07825f8"
