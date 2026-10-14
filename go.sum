@@ -36,8 +36,8 @@ github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
-go.michaelspost.com/gatekit v0.7.0 h1:/FV6dEbvil/Gx1KOgr/WvCt9PlctbDjAoNoyk61PkeE=
-go.michaelspost.com/gatekit v0.7.0/go.mod h1:10IdUg8C5NVI5HRoNNsKSv6MAoBaEksnwP9oXUodAEo=
+go.michaelspost.com/gatekit v0.7.1 h1:Jezmyqur30117tj/JBB2WnzchvXJhBengHPVIJn+hIE=
+go.michaelspost.com/gatekit v0.7.1/go.mod h1:973REqlZns4zqFnKvewnKEC5ViRrX1QQbf6JHCyDveU=
 go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
 go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=
 go.yaml.in/yaml/v2 v2.4.4 h1:tuyd0P+2Ont/d6e2rl3be67goVK4R6deVxCUX5vyPaQ=
