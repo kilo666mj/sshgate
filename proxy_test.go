@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"go.michaelspost.com/gatekit/approval"
 	gateproxy "go.michaelspost.com/gatekit/proxy"
+	"go.michaelspost.com/gatekit/store"
 )
 
 func testBanner(id string) *backendBanner {
@@ -170,6 +172,140 @@ func TestApprovedClientChecksBannerAndPreservesBufferedTraffic(t *testing.T) {
 		if banner.get().id != "SSH-2.0-new-server" {
 			t.Fatal("banner was not refreshed")
 		}
+	}
+}
+
+// TestScopedApprovalIsEnforced pins the defense-in-depth path: an approved
+// fingerprint carrying approval_ranges must only be proxied from inside those
+// ranges, even though sshgate itself does not advertise scope support and
+// never creates such rows. The client uses a real TCP pair so handleConn sees
+// an actual source address; net.Pipe would present "pipe" instead.
+func TestScopedApprovalIsEnforced(t *testing.T) {
+	packet := kexInitPacket()
+	kex, err := readSSHKexInit(bufio.NewReader(bytes.NewReader(packet)), "SSH-2.0-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		scope   []string
+		proxied bool
+	}{
+		{name: "source outside scope", scope: []string{"10.0.0.0/8"}, proxied: false},
+		{name: "source inside scope", scope: []string{"127.0.0.0/8"}, proxied: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = backend.Close() }()
+
+			st, err := NewStore(filepath.Join(t.TempDir(), "gate.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = st.Close() }()
+			scope, err := approval.New(tc.scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.ApplyDecisions([]store.Decision{{
+				Fingerprint:    kex.fingerprint.Hash,
+				Status:         StatusApproved,
+				ApprovalRanges: scope,
+			}}, "", ""); err != nil {
+				t.Fatal(err)
+			}
+
+			if tc.proxied {
+				go func() {
+					c, err := backend.Accept()
+					if err != nil {
+						return
+					}
+					defer func() { _ = c.Close() }()
+					_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+					r := bufio.NewReader(c)
+					if _, err := r.ReadString('\n'); err != nil {
+						return
+					}
+					if _, err := c.Write([]byte("SSH-2.0-test-server\r\n")); err != nil {
+						return
+					}
+					got := make([]byte, len(packet))
+					if _, err := io.ReadFull(r, got); err != nil {
+						return
+					}
+					if !bytes.Equal(got, packet) {
+						return
+					}
+					_, _ = c.Write([]byte("backend-data"))
+				}()
+			}
+
+			clientLn, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = clientLn.Close() }()
+			client, err := net.Dial("tcp", clientLn.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = client.Close() }()
+			accepted, err := clientLn.Accept()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				handleConn(accepted, gateproxy.Route{Backend: backend.Addr().String()}, st, false, nil, testBanner("SSH-2.0-test-server"), nil)
+			}()
+
+			_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+			if _, err := client.Write([]byte("SSH-2.0-test\r\n")); err != nil {
+				t.Fatal(err)
+			}
+			r := bufio.NewReader(client)
+			if _, err := r.ReadString('\n'); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.Write(packet); err != nil {
+				t.Fatal(err)
+			}
+
+			if !tc.proxied {
+				if _, err := r.ReadByte(); err != io.EOF {
+					t.Fatalf("expected rejection after KEXINIT, got %v", err)
+				}
+				<-done
+				if err := backend.(*net.TCPListener).SetDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+					t.Fatal(err)
+				}
+				conn, err := backend.Accept()
+				if err == nil {
+					_ = conn.Close()
+					t.Fatal("scope-denied client opened a backend connection")
+				}
+				if !isTimeout(err) {
+					t.Fatal(err)
+				}
+				return
+			}
+			got, err := io.ReadAll(r)
+			_ = client.Close()
+			<-done
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(got, []byte("backend-data")) {
+				t.Fatalf("client inside scope was not proxied, got %q", got)
+			}
+		})
 	}
 }
 

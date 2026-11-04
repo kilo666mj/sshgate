@@ -136,6 +136,13 @@ omitted, sync is disabled and local CLI/database behavior is unchanged. The
 optional `server_name` field overrides TLS server-name verification when the URL
 host does not match the server certificate.
 
+`sshgate` does not advertise approval-range support, so Gatehub decisions
+carrying `approval_ranges` are rejected rather than half-applied. As
+defense-in-depth, an approved row that nevertheless carries approval ranges
+(from a hand-edited database or a future feature flip) is only proxied from
+inside those ranges; other sources are declined with a `SCOPE_DENIED` log line
+and a `scope_denied` connection result.
+
 ## Correlate
 
 `correlate` lists the `sshd` log lines for a fingerprint's sessions:

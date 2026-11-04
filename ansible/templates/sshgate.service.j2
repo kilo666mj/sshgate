@@ -32,6 +32,12 @@ ProtectControlGroups=true
 PrivateDevices=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 ReadWritePaths={{ sshgate_data_dir }}
+# The database records observed client addresses and labels; keep the SQLite
+# files and WAL sidecars at 0640 instead of the 0644 process default.
+UMask=0027
+ProtectClock=true
+ProtectHostname=true
+ProcSubset=pid
 CapabilityBoundingSet=
 AmbientCapabilities=
 LockPersonality=true

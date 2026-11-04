@@ -9,9 +9,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"sync"
 	"time"
 
+	"go.michaelspost.com/gatekit/approval"
 	"go.michaelspost.com/gatekit/controlplane"
 	"go.michaelspost.com/gatekit/lifecycle"
 	gateproxy "go.michaelspost.com/gatekit/proxy"
@@ -278,6 +280,18 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 
 	switch entry.Status {
 	case StatusApproved:
+		// sshgate does not advertise approval-range support to Gatehub and its
+		// own CLI cannot create scopes, so a scoped row here means a hand-edited
+		// database, a Gatehub that ignored capabilities, or a future config
+		// flip. Enforce the restriction rather than silently treat a scoped
+		// approval as global.
+		if !allowsClient(entry.ApprovalRanges, clientIP) {
+			result = "scope_denied"
+			log.Printf("[%s] SCOPE_DENIED %s label=%q client=%q ranges=%v",
+				clientIP, kex.fingerprint.Hash, entry.Label, kex.fingerprint.ClientID,
+				entry.ApprovalRanges.Ranges())
+			return
+		}
 		log.Printf("[%s] APPROVED %s label=%q client=%q", clientIP, kex.fingerprint.Hash, entry.Label, kex.fingerprint.ClientID)
 	case StatusBlocked:
 		result = "blocked"
@@ -342,6 +356,17 @@ func handleConn(client net.Conn, route gateproxy.Route, st *store.Store, allowUn
 	go proxyCopy(&wg, client, metricsReader{reader: backendReader, metrics: metrics, route: route.Listen, direction: "backend_to_client"}, backend)
 	wg.Wait()
 	result = "proxied"
+}
+
+// allowsClient reports whether a scoped approval covers the connecting peer.
+// A nil scope is an unrestricted approval; a scope that does not contain the
+// peer's address — or an unparseable one — denies the connection.
+func allowsClient(scope *approval.Scope, ip string) bool {
+	if scope == nil {
+		return true
+	}
+	addr, err := netip.ParseAddr(ip)
+	return err == nil && scope.Allows(addr)
 }
 
 func closeConnection(conn net.Conn, clientIP, side string) {
