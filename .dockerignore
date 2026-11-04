@@ -1,0 +1,18 @@
+# Keep local state, checkout metadata, and build artifacts out of the image
+# build context. The builder needs only the module files and Go sources.
+.git
+.github
+.build
+ansible
+docs
+node_modules
+
+# Local databases hold observed client addresses and operator labels.
+*.db
+*.db-*
+db.json
+
+# Local build outputs and editor/OS noise.
+sshgate
+sshgate-linux-*
+*.tmp

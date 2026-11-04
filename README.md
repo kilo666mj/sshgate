@@ -34,7 +34,7 @@ The backend must be reachable when SSHGate starts.
 
 ## Safe quick start
 
-Build and test with Go 1.27.1 or newer:
+Build and test with Go 1.27.3 or newer:
 
 ```sh
 go build -o sshgate .
