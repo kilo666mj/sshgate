@@ -24,6 +24,10 @@ handshakes, 1,714 timed out, and 863 matched blocked fingerprints. Over the same
 week, the SSH daemons behind sshgate recorded **16,618 successful logins and
 zero failed login attempts**.
 
+[![Animation showing sshgate blocking one SSH client and forwarding an approved client to sshd](docs/art/sshgate-showcase-preview.gif)](docs/art/sshgate-showcase.mp4?raw=1)
+
+[Watch the 39-second sshgate showcase with sound (MP4)](docs/art/sshgate-showcase.mp4?raw=1)
+
 ## Security boundary
 
 SSH client fingerprints are spoofable. **This is not authentication.**
