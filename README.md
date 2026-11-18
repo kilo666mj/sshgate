@@ -18,6 +18,12 @@ approve or block those fingerprints before key exchange reaches the backend.
 It can run standalone or synchronize observations and decisions with
 [Gatehub](https://github.com/kilo666mj/gatehub).
 
+**In production.** Across 13 hosts in the seven days ending November 18, 2026,
+**9,610 connections stopped at sshgate**. Of those, 7,033 sent malformed SSH
+handshakes, 1,714 timed out, and 863 matched blocked fingerprints. Over the same
+week, the SSH daemons behind sshgate recorded **16,618 successful logins and
+zero failed login attempts**.
+
 ## Security boundary
 
 SSH client fingerprints are spoofable. **This is not authentication.**
